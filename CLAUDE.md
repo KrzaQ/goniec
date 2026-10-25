@@ -156,14 +156,27 @@ checked 2026-10-24 for version 2.1.310). Test them before relying on them.
     `claude` process. Hooks get `CLAUDE_PROJECT_DIR` (the project root, also
     when the session changed directories). The Bash tool gets `CLAUDE_PID`
     but not `CLAUDE_PROJECT_DIR`.
+  - A watcher that exits 2 while a turn runs does not interrupt it. Claude
+    Code holds the wake until the turn ends and then runs an extra short
+    turn. So the watcher leaves messages alone while the session is in a
+    turn, and `PostToolBatch` delivers them inline.
+- **Measured on a restart (2026-10-25, 2.1.302 to 2.1.310, with `claude -c`):**
+  - The `SessionStart` watcher armed one second after startup and did not
+    block it. The first turn after the restart ran at once (7 s busy, then
+    idle). The watcher from that turn's `Stop` found the lock taken and ended.
+  - The old session's watcher was gone after the exit.
+- **Busy or idle.** No hook marks a turn's end reliably: `Stop` does not run
+  when the user presses Esc. Claude Code keeps the state in an internal file
+  per process, `~/.claude/sessions/<pid>.json`, field `status` (`busy`,
+  `waiting` for a permission answer, `idle`). The watcher reads it for its
+  `claude` process, only when a message waits. The documented `claude agents
+  --json` lists background sessions only, not sessions started with `claude`
+  in a terminal, and the user's sessions are of that kind. If the file is
+  missing or its format changes, the watcher delivers as if the session were
+  idle: the message then arrives when the turn ends.
 - **Still to test:**
-  - Delivery while the session is busy, through `PostToolBatch`.
-  - One unverified report says an `asyncRewake` hook on `SessionStart`
-    blocked startup in 2.1.246. If that still happens, arm only from `Stop`.
-  - Whether Claude Code kills a running watcher when the session exits. The
-    watcher also ends by itself when its `claude` process is gone.
-  - The docs do not say whether `--resume` re-reads hook config. A restart
-    always does.
+  - Delivery while the session is busy, through `PostToolBatch`, now that
+    the watcher holds back.
 
 ## Other harnesses (codex, opencode, pi)
 

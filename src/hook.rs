@@ -154,7 +154,12 @@ fn wait_for_messages() -> Result<Option<String>> {
         .map_or(RENEW_AFTER, Duration::from_secs);
     let started = Instant::now();
     loop {
-        if let Some(text) = inbox.take_fitting(&nick, MAX_CHARS)? {
+        // While a turn runs, PostToolBatch delivers inline. A wake from here
+        // would wait for the turn to end and then cost a turn of its own.
+        if inbox.pending()? > 0
+            && !owner.in_turn()
+            && let Some(text) = inbox.take_fitting(&nick, MAX_CHARS)?
+        {
             return Ok(Some(text));
         }
         if !owner.alive() {
@@ -217,6 +222,31 @@ impl Owner {
     fn alive(&self) -> bool {
         Stat::read(self.pid).is_some_and(|s| s.start == self.start)
     }
+
+    /// Claude Code says this session is in a turn (`busy`) or waits for a
+    /// permission answer (`waiting`). It keeps one file per process in
+    /// `~/.claude/sessions/<pid>.json`, with a `status` field. The file is
+    /// internal and undocumented: the documented `claude agents --json` lists
+    /// background sessions only, not ones started with `claude` in a
+    /// terminal. If the file is missing or its format changes, this says no,
+    /// so the watcher delivers as if the session were idle.
+    fn in_turn(&self) -> bool {
+        let dir = match std::env::var_os("CLAUDE_CONFIG_DIR") {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => match std::env::home_dir() {
+                Some(home) => home.join(".claude"),
+                None => return false,
+            },
+        };
+        let Ok(text) = fs::read_to_string(dir.join("sessions").join(format!("{}.json", self.pid)))
+        else {
+            return false;
+        };
+        let status = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["status"].as_str().map(str::to_owned));
+        matches!(status.as_deref(), Some("busy" | "waiting"))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -257,5 +287,9 @@ impl Owner {
 
     fn alive(&self) -> bool {
         true
+    }
+
+    fn in_turn(&self) -> bool {
+        false
     }
 }
