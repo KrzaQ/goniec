@@ -1,5 +1,6 @@
 //! A thin client for the parts of the Zulip REST API that goniec uses.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -114,6 +115,19 @@ impl Client {
         Ok(())
     }
 
+    /// The channels this client's user has joined.
+    pub async fn subscriptions(&self) -> Result<Vec<Subscription>> {
+        let subs: Subscriptions =
+            call(self.request(reqwest::Method::GET, "/users/me/subscriptions")).await?;
+        Ok(subs.subscriptions)
+    }
+
+    /// The presence of every human in the realm, by email. Zulip keeps no
+    /// presence for bots.
+    pub async fn presence(&self) -> Result<RealmPresence> {
+        call(self.request(reqwest::Method::GET, "/realm/presence")).await
+    }
+
     /// All active users in the realm, bots included.
     pub async fn users(&self) -> Result<Vec<User>> {
         let users: Users = call(self.request(reqwest::Method::GET, "/users")).await?;
@@ -158,6 +172,36 @@ struct Users {
 #[derive(Deserialize)]
 struct Sent {
     id: u64,
+}
+
+#[derive(Deserialize)]
+pub struct Subscription {
+    pub name: String,
+    pub description: String,
+    pub invite_only: bool,
+}
+
+#[derive(Deserialize)]
+struct Subscriptions {
+    subscriptions: Vec<Subscription>,
+}
+
+#[derive(Deserialize)]
+pub struct RealmPresence {
+    pub presences: HashMap<String, UserPresence>,
+    pub server_timestamp: f64,
+}
+
+#[derive(Deserialize)]
+pub struct UserPresence {
+    pub aggregated: Presence,
+}
+
+#[derive(Deserialize)]
+pub struct Presence {
+    /// `active` or `idle`.
+    pub status: String,
+    pub timestamp: i64,
 }
 
 /// Send a request and decode Zulip's `{"result": ..., "msg": ...}` envelope.
