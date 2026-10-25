@@ -1,4 +1,5 @@
 pub mod binding;
+pub mod inbox;
 pub mod keys;
 pub mod provision;
 pub mod rooms;
