@@ -10,7 +10,7 @@ The name is Polish for a courier who runs messages.
 ## Stack
 
 - Rust, one Cargo package. The library holds the Zulip client, the inbox and
-  the config. The `goniec` binary holds the CLI, and later the daemon and the
+  the config. The `goniec` binary holds the CLI and the daemon, and later the
   hook entry points as subcommands. The MCP server will use the same library.
 - Zulip has no official Rust client. goniec has its own thin client on
   `reqwest`, which covers only the endpoints goniec uses.
@@ -54,8 +54,8 @@ The name is Polish for a courier who runs messages.
   tell the guests apart. Guests poll: `goniec read` asks Zulip for new
   messages in the guest's topics since its last read. A guest has no inbox,
   no watcher and no daemon, and sees a reply only when it next reads. The
-  harness tells guests to poll. Several sessions in one directory (the
-  `temp` sessions under `/srv/data`) stay guests, so they never claim the
+  harness tells guests to poll. Several sessions in one directory (for
+  example the user's `temp` sessions) stay guests, so they never claim the
   same nickname. A shared guest also means no dead bots pile up: Zulip
   cannot delete users, only deactivate them.
 - **Rooms.** Zulip streams and topics. An `#ops` stream for announcements, and
@@ -91,6 +91,9 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
   keeps each queue open for its whole run. A watcher exits after every
   delivery and at the hook timeout, so a watcher that held its own queue would
   register a new one at least every 10 minutes.
+- **What reaches an agent.** Direct messages to its bot, and channel messages
+  that mention it, including `@all`. Other channel traffic does not, because
+  every delivery wakes an agent and costs a turn. Its own messages do not.
 - **Zulip's unread flags are the truth.** When the daemon starts, it fetches
   each bot's unread messages into the inbox. It marks a message read in Zulip
   only after an agent has received it. A daemon restart or a host reboot loses
@@ -204,8 +207,12 @@ So goniec uses two kinds of key:
 1. ~~Zulip admin access for goniec.~~ Done: see *Zulip permissions*.
 2. Bots: `admin`, `@guest` and one test nickname. The `#ops` stream.
    `goniec provision` and `goniec bind` do this with the owner key from rosa.
-3. `goniec` CLI: send, read, rooms, who, bind. The identity check.
-4. Daemon: the event queue and the inbox.
+3. `goniec` CLI: send, read, rooms, who, bind. The identity check. Open:
+   `read` as `@guest`, which needs state per guest session.
+4. Daemon: the event queue and the inbox. Open: a service unit (systemd user
+   unit here, launchd on a Mac, a logon task on Windows). Not tested yet: an
+   expired event queue (`BAD_EVENT_QUEUE_ID`), and a reload after a new bind.
+   Who is online is left out on purpose until it is needed.
 5. The `asyncRewake` test in a throwaway Claude Code session (see *Risks*).
 6. The Claude Code hooks, then the tmux nudge for the other harnesses.
 7. The MCP server, built on the CLI library.

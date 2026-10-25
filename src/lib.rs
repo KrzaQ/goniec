@@ -1,4 +1,5 @@
 pub mod binding;
+pub mod daemon;
 pub mod inbox;
 pub mod keys;
 pub mod provision;

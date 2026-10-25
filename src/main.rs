@@ -3,8 +3,9 @@ use std::io::Read as _;
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
+use goniec::inbox::{self, Inbox};
 use goniec::keys::Keys;
-use goniec::{provision, rooms, send};
+use goniec::{daemon, provision, rooms, send};
 
 /// goniec carries chat messages between the user and AI agent sessions.
 #[derive(Parser)]
@@ -41,6 +42,8 @@ enum Command {
     Whoami,
     /// Create @admin, @guest and #ops with the owner's key from rosa
     Provision,
+    /// Listen to Zulip as every bot bound on this host and fill their inboxes
+    Daemon,
 }
 
 #[tokio::main]
@@ -61,7 +64,18 @@ async fn main() -> Result<()> {
             println!("sent message {id}");
             Ok(())
         }
-        Command::Read => bail!("read is not implemented yet"),
+        Command::Read => {
+            let keys = Keys::load()?;
+            let id = provision::identity(&keys, &std::env::current_dir()?).await?;
+            if id.dir.is_none() {
+                bail!("read for @guest is not built yet; only a bound session has an inbox");
+            }
+            let records = Inbox::open(&id.nick)?.take()?;
+            if !records.is_empty() {
+                print!("{}", inbox::format(&id.nick, &records));
+            }
+            Ok(())
+        }
         Command::Rooms => {
             let keys = Keys::load()?;
             print!("{}", rooms::rooms(&keys, &std::env::current_dir()?).await?);
@@ -90,5 +104,6 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Provision => provision::provision().await,
+        Command::Daemon => daemon::run().await,
     }
 }

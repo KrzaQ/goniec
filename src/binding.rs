@@ -29,7 +29,7 @@ pub fn find(dir: &Path) -> Result<Option<(PathBuf, Binding)>> {
     Ok(None)
 }
 
-fn read(path: &Path) -> Result<Binding> {
+pub fn read(path: &Path) -> Result<Binding> {
     let text =
         fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     toml::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))

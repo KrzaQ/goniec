@@ -11,5 +11,5 @@ gethostname = "1.1.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "query", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
 toml = "1.1.8"
