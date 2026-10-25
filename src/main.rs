@@ -1,8 +1,10 @@
+use std::io::Read as _;
+
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
 use goniec::keys::Keys;
-use goniec::provision;
+use goniec::{provision, send};
 
 /// goniec carries chat messages between the user and AI agent sessions.
 #[derive(Parser)]
@@ -14,12 +16,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Send a message to a stream topic or to a nickname
+    /// Send a message to a channel topic or to a nickname
     Send {
-        /// `#stream>topic` or a nickname
+        /// `#channel>topic`, `@nick` or a human's full name
         to: String,
-        /// The message text
-        text: String,
+        /// The message text; `-` or nothing reads it from stdin
+        text: Option<String>,
     },
     /// Print the messages in this session's inbox and mark them delivered
     Read,
@@ -45,7 +47,20 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Send { .. } => bail!("send is not implemented yet"),
+        Command::Send { to, text } => {
+            let text = match text.as_deref() {
+                None | Some("-") => {
+                    let mut text = String::new();
+                    std::io::stdin().read_to_string(&mut text)?;
+                    text
+                }
+                Some(text) => text.to_owned(),
+            };
+            let keys = Keys::load()?;
+            let id = send::send(&keys, &std::env::current_dir()?, &to, text.trim_end()).await?;
+            println!("sent message {id}");
+            Ok(())
+        }
         Command::Read => bail!("read is not implemented yet"),
         Command::Rooms => bail!("rooms is not implemented yet"),
         Command::Who => bail!("who is not implemented yet"),
