@@ -27,6 +27,22 @@ const MENTION_FLAGS: &[&str] = &[
     "wildcard_mentioned",
 ];
 
+/// The exit code when another daemon holds the lock. A service manager can
+/// treat it as final (systemd: `RestartPreventExitStatus=3`), so it does not
+/// restart a second daemon forever.
+pub const EXIT_ALREADY_RUNNING: i32 = 3;
+
+#[derive(Debug)]
+pub struct AlreadyRunning;
+
+impl std::fmt::Display for AlreadyRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("another goniec daemon runs on this host")
+    }
+}
+
+impl std::error::Error for AlreadyRunning {}
+
 fn log(nick: &str, msg: impl std::fmt::Display) {
     eprintln!("goniec daemon: @{nick}: {msg}");
 }
@@ -38,7 +54,7 @@ pub async fn run() -> Result<()> {
     let lock = fs::File::create(&lock_path)
         .with_context(|| format!("cannot open {}", lock_path.display()))?;
     if lock.try_lock().is_err() {
-        bail!("another goniec daemon runs on this host");
+        return Err(AlreadyRunning.into());
     }
 
     let key_file = keys::path()?;

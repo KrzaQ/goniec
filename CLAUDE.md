@@ -209,8 +209,10 @@ So goniec uses two kinds of key:
    `goniec provision` and `goniec bind` do this with the owner key from rosa.
 3. `goniec` CLI: send, read, rooms, who, bind. The identity check. Open:
    `read` as `@guest`, which needs state per guest session.
-4. Daemon: the event queue and the inbox. Open: a service unit (systemd user
-   unit here, launchd on a Mac, a logon task on Windows). Not tested yet: an
+4. Daemon: the event queue and the inbox. The user's dotfiles vendor goniec
+   and hold the systemd user unit (`make install-goniec-daemon`). The unit
+   does not restart on exit code 3, which means another daemon holds the
+   lock. Open: launchd on a Mac, a logon task on Windows. Not tested yet: an
    expired event queue (`BAD_EVENT_QUEUE_ID`), and a reload after a new bind.
    Who is online is left out on purpose until it is needed.
 5. The `asyncRewake` test in a throwaway Claude Code session (see *Risks*).

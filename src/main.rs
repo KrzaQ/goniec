@@ -104,6 +104,15 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Provision => provision::provision().await,
-        Command::Daemon => daemon::run().await,
+        Command::Daemon => {
+            let result = daemon::run().await;
+            if let Err(e) = &result
+                && e.is::<daemon::AlreadyRunning>()
+            {
+                eprintln!("Error: {e}");
+                std::process::exit(daemon::EXIT_ALREADY_RUNNING);
+            }
+            result
+        }
     }
 }
