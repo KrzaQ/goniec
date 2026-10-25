@@ -24,6 +24,11 @@ enum Command {
     Rooms,
     /// List the nicknames that are online
     Who,
+    /// Give this directory its own bot (default nickname: the directory name)
+    Bind {
+        /// The nickname, if not the directory name
+        nick: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -33,5 +38,6 @@ fn main() -> Result<()> {
         Command::Read => bail!("read is not implemented yet"),
         Command::Rooms => bail!("rooms is not implemented yet"),
         Command::Who => bail!("who is not implemented yet"),
+        Command::Bind { .. } => bail!("bind is not implemented yet"),
     }
 }
