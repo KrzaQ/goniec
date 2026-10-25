@@ -127,10 +127,11 @@ pub async fn provision() -> Result<()> {
         .await?;
     let guest = owner.ensure_bot(&mut keys, "guest", true).await?;
 
-    let members = [owner.user_id, admin.user_id, guest.user_id];
-    Client::new(&keys.site, &admin.email, &admin.api_key)?
-        .subscribe(OPS_CHANNEL, OPS_DESCRIPTION, &members)
-        .await?;
+    // Every bot on this host joins #ops, so running provision again also
+    // adds bots that were bound before bind did this itself.
+    let mut members = vec![owner.user_id];
+    members.extend(keys.bots.values().map(|bot| bot.user_id));
+    join_ops(&keys, &members).await?;
     println!(
         "@admin (user {}), @guest (user {}), #{OPS_CHANNEL}",
         admin.user_id, guest.user_id
@@ -138,7 +139,15 @@ pub async fn provision() -> Result<()> {
     Ok(())
 }
 
-/// Give `dir` its own bot and write its `.goniec`.
+/// Subscribe users to #ops, as @admin. This creates #ops if it is missing.
+async fn join_ops(keys: &Keys, user_ids: &[u64]) -> Result<()> {
+    let admin = keys.bot("admin")?;
+    Client::new(&keys.site, &admin.email, &admin.api_key)?
+        .subscribe(OPS_CHANNEL, OPS_DESCRIPTION, user_ids)
+        .await
+}
+
+/// Give `dir` its own bot, add it to #ops and write its `.goniec`.
 pub async fn bind(dir: &Path, nick: Option<String>, reuse: bool) -> Result<()> {
     if dir.join(binding::FILE).exists() {
         bail!(
@@ -171,6 +180,7 @@ pub async fn bind(dir: &Path, nick: Option<String>, reuse: bool) -> Result<()> {
         entry.dir = Some(dir.to_owned());
     }
     keys.save()?;
+    join_ops(&keys, &[bot.user_id]).await?;
     binding::write(
         dir,
         &Binding {
