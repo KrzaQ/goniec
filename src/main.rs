@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 
 use goniec::inbox::{self, Inbox};
 use goniec::keys::Keys;
-use goniec::{daemon, provision, rooms, send};
+use goniec::{binding, daemon, provision, rooms, send};
 
 /// goniec carries chat messages between the user and AI agent sessions.
 #[derive(Parser)]
@@ -60,13 +60,13 @@ async fn main() -> Result<()> {
                 Some(text) => text.to_owned(),
             };
             let keys = Keys::load()?;
-            let id = send::send(&keys, &std::env::current_dir()?, &to, text.trim_end()).await?;
+            let id = send::send(&keys, &binding::session_dir()?, &to, text.trim_end()).await?;
             println!("sent message {id}");
             Ok(())
         }
         Command::Read => {
             let keys = Keys::load()?;
-            let id = provision::identity(&keys, &std::env::current_dir()?).await?;
+            let id = provision::identity(&keys, &binding::session_dir()?).await?;
             if id.dir.is_none() {
                 bail!("read for @guest is not built yet; only a bound session has an inbox");
             }
@@ -78,20 +78,20 @@ async fn main() -> Result<()> {
         }
         Command::Rooms => {
             let keys = Keys::load()?;
-            print!("{}", rooms::rooms(&keys, &std::env::current_dir()?).await?);
+            print!("{}", rooms::rooms(&keys, &binding::session_dir()?).await?);
             Ok(())
         }
         Command::Who => {
             let keys = Keys::load()?;
-            print!("{}", rooms::who(&keys, &std::env::current_dir()?).await?);
+            print!("{}", rooms::who(&keys, &binding::session_dir()?).await?);
             Ok(())
         }
         Command::Bind { nick, reuse } => {
-            provision::bind(&std::env::current_dir()?, nick, reuse).await
+            provision::bind(&binding::session_dir()?, nick, reuse).await
         }
         Command::Whoami => {
             let keys = Keys::load()?;
-            let id = provision::identity(&keys, &std::env::current_dir()?).await?;
+            let id = provision::identity(&keys, &binding::session_dir()?).await?;
             match id.dir {
                 Some(dir) => println!(
                     "@{} (user {}), bound to {}",

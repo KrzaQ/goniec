@@ -40,6 +40,10 @@ The name is Polish for a courier who runs messages.
   holds the nickname and the bot's Zulip user ID. Each bound directory has its
   own permanent bot, for example one per customer. Messages for it queue in
   its inbox while it is offline, and arrive when it starts again.
+- **Session directory.** goniec reads only `<session dir>/.goniec` and never
+  looks in parent directories. The session directory is `$GONIEC_DIR`, else
+  `$CLAUDE_PROJECT_DIR` (where Claude Code started), else the current
+  directory. A session that changes into a subdirectory keeps its identity.
 - **Binding.** `goniec bind [nick]` creates the bot, writes `.goniec`, and
   stores the bot's key on this host. The nickname defaults to the basename of
   the directory, like the user's `tm` and `.tmux-session`. Creating a bot

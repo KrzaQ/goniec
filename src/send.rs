@@ -73,18 +73,18 @@ pub fn guest_header(host: &str, dir: &Path, home: Option<&Path>) -> String {
 }
 
 /// Post `text` as this session's bot. Returns the message ID.
-pub async fn send(keys: &Keys, cwd: &Path, to: &str, text: &str) -> Result<u64> {
+pub async fn send(keys: &Keys, session_dir: &Path, to: &str, text: &str) -> Result<u64> {
     let target = parse_target(to)?;
     if text.trim().is_empty() {
         bail!("the message is empty");
     }
-    let id = provision::identity(keys, cwd).await?;
+    let id = provision::identity(keys, session_dir).await?;
     let content = match id.dir {
         Some(_) => text.to_owned(),
         None => {
             let host = gethostname::gethostname();
             let home = std::env::home_dir();
-            let header = guest_header(&host.to_string_lossy(), cwd, home.as_deref());
+            let header = guest_header(&host.to_string_lossy(), session_dir, home.as_deref());
             format!("{header}\n{text}")
         }
     };
@@ -114,14 +114,8 @@ mod tests {
                 topic: "PHP 8.5.12 rollout".into()
             }
         );
-        assert_eq!(
-            parse_target("@acme").unwrap(),
-            Target::User("acme".into())
-        );
-        assert_eq!(
-            parse_target("acme").unwrap(),
-            Target::User("acme".into())
-        );
+        assert_eq!(parse_target("@acme").unwrap(), Target::User("acme".into()));
+        assert_eq!(parse_target("acme").unwrap(), Target::User("acme".into()));
         assert!(parse_target("#ops").is_err());
         assert!(parse_target("#ops>").is_err());
         assert!(parse_target("#>topic").is_err());

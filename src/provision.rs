@@ -192,7 +192,8 @@ pub async fn bind(dir: &Path, nick: Option<String>, reuse: bool) -> Result<()> {
     Ok(())
 }
 
-/// Who this session is: the bot bound to the nearest `.goniec`, else @guest.
+/// Who this session is: the bot bound to the session directory's `.goniec`,
+/// else @guest.
 pub struct Identity {
     pub nick: String,
     pub bot: Bot,
@@ -201,9 +202,10 @@ pub struct Identity {
 }
 
 /// Find this session's identity and check it with Zulip.
-pub async fn identity(keys: &Keys, cwd: &Path) -> Result<Identity> {
-    let (nick, dir) = match binding::find(cwd)? {
-        Some((dir, binding)) => {
+pub async fn identity(keys: &Keys, session_dir: &Path) -> Result<Identity> {
+    let (nick, dir) = match binding::find(session_dir)? {
+        Some(binding) => {
+            let dir = session_dir.to_owned();
             let bot = keys.bot(&binding.nick)?;
             if bot.user_id != binding.user_id {
                 bail!(

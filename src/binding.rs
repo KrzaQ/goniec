@@ -17,16 +17,26 @@ pub struct Binding {
     pub user_id: u64,
 }
 
-/// Find the nearest `.goniec` in `dir` or one of its parents, so that a
-/// session that changed into a subdirectory keeps its identity.
-pub fn find(dir: &Path) -> Result<Option<(PathBuf, Binding)>> {
-    for dir in dir.ancestors() {
-        let path = dir.join(FILE);
-        if path.is_file() {
-            return Ok(Some((dir.to_owned(), read(&path)?)));
+/// The session's directory: `$GONIEC_DIR`, else `$CLAUDE_PROJECT_DIR` (the
+/// directory Claude Code started in), else the current directory.
+pub fn session_dir() -> Result<PathBuf> {
+    for var in ["GONIEC_DIR", "CLAUDE_PROJECT_DIR"] {
+        if let Some(dir) = std::env::var_os(var).filter(|d| !d.is_empty()) {
+            return Ok(dir.into());
         }
     }
-    Ok(None)
+    Ok(std::env::current_dir()?)
+}
+
+/// Read `dir/.goniec`, if it exists. goniec never looks in parent
+/// directories: a binding belongs to the directory a session started in.
+pub fn find(dir: &Path) -> Result<Option<Binding>> {
+    let path = dir.join(FILE);
+    if path.is_file() {
+        Ok(Some(read(&path)?))
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn read(path: &Path) -> Result<Binding> {
@@ -75,7 +85,7 @@ mod tests {
     }
 
     #[test]
-    fn find_walks_up() {
+    fn find_reads_only_this_directory() {
         let root = std::env::temp_dir().join(format!("goniec-test-{}", std::process::id()));
         let sub = root.join("a/b");
         fs::create_dir_all(&sub).unwrap();
@@ -85,10 +95,10 @@ mod tests {
         };
         write(&root, &binding).unwrap();
 
-        let (dir, found) = find(&sub).unwrap().unwrap();
-        assert_eq!(dir, root);
+        let found = find(&root).unwrap().unwrap();
         assert_eq!(found.nick, "acme");
         assert_eq!(found.user_id, 42);
+        assert!(find(&sub).unwrap().is_none());
         fs::remove_dir_all(&root).unwrap();
     }
 }

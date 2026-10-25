@@ -13,8 +13,8 @@ use crate::zulip::{Client, Presence, User};
 const OFFLINE_AFTER_SECS: i64 = 140;
 
 /// The channels this session's bot has joined, one per line.
-pub async fn rooms(keys: &Keys, cwd: &Path) -> Result<String> {
-    let id = provision::identity(keys, cwd).await?;
+pub async fn rooms(keys: &Keys, session_dir: &Path) -> Result<String> {
+    let id = provision::identity(keys, session_dir).await?;
     let client = Client::new(&keys.site, &id.bot.email, &id.bot.api_key)?;
     let mut subs = client.subscriptions().await?;
     subs.sort_by(|a, b| a.name.cmp(&b.name));
@@ -58,8 +58,8 @@ fn nick(user: &User) -> &str {
 
 /// Every human with their presence, and every bot with where it is bound
 /// on this host.
-pub async fn who(keys: &Keys, cwd: &Path) -> Result<String> {
-    let id = provision::identity(keys, cwd).await?;
+pub async fn who(keys: &Keys, session_dir: &Path) -> Result<String> {
+    let id = provision::identity(keys, session_dir).await?;
     let client = Client::new(&keys.site, &id.bot.email, &id.bot.api_key)?;
     let users = client.users().await?;
     let presence = client.presence().await?;
