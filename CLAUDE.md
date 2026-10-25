@@ -86,7 +86,15 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
   host (where rosa holds the owner key), and the user copies the key over.
   The `@guest` key is on every host, because guests only poll.
 - **Daemon.** It reads Zulip's real-time event queue for each bot bound on its
-  host and writes each message to the inbox of each recipient.
+  host and writes each message to the inbox of each recipient. A daemon holds
+  the same number of Zulip queues as the watchers would (one per bot), but it
+  keeps each queue open for its whole run. A watcher exits after every
+  delivery and at the hook timeout, so a watcher that held its own queue would
+  register a new one at least every 10 minutes.
+- **Zulip's unread flags are the truth.** When the daemon starts, it fetches
+  each bot's unread messages into the inbox. It marks a message read in Zulip
+  only after an agent has received it. A daemon restart or a host reboot loses
+  nothing, and the local inbox is only a fast cache.
 - **Inbox.** One spool directory per nickname. Delivery moves a file to
   `delivered/`, so a message reaches an agent once, whichever path delivers it.
 - **Message records.** Each inbox file keeps the stream, the topic, the
