@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
 use goniec::keys::Keys;
-use goniec::{provision, send};
+use goniec::{provision, rooms, send};
 
 /// goniec carries chat messages between the user and AI agent sessions.
 #[derive(Parser)]
@@ -27,7 +27,7 @@ enum Command {
     Read,
     /// List the streams this session's bot has joined
     Rooms,
-    /// List the nicknames that are online
+    /// List the humans with their presence, and every bot
     Who,
     /// Give this directory its own bot (default nickname: the directory name)
     Bind {
@@ -62,8 +62,16 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Read => bail!("read is not implemented yet"),
-        Command::Rooms => bail!("rooms is not implemented yet"),
-        Command::Who => bail!("who is not implemented yet"),
+        Command::Rooms => {
+            let keys = Keys::load()?;
+            print!("{}", rooms::rooms(&keys, &std::env::current_dir()?).await?);
+            Ok(())
+        }
+        Command::Who => {
+            let keys = Keys::load()?;
+            print!("{}", rooms::who(&keys, &std::env::current_dir()?).await?);
+            Ok(())
+        }
         Command::Bind { nick, reuse } => {
             provision::bind(&std::env::current_dir()?, nick, reuse).await
         }
