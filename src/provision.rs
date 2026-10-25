@@ -179,8 +179,9 @@ pub async fn bind(dir: &Path, nick: Option<String>, reuse: bool) -> Result<()> {
     if let Some(entry) = keys.bots.get_mut(&nick) {
         entry.dir = Some(dir.to_owned());
     }
-    keys.save()?;
-    join_ops(&keys, &[bot.user_id]).await?;
+    // Write .goniec before the key file names the directory: the daemon
+    // reloads when the key file changes, and it skips a bot whose
+    // directory has no matching .goniec yet.
     binding::write(
         dir,
         &Binding {
@@ -188,6 +189,8 @@ pub async fn bind(dir: &Path, nick: Option<String>, reuse: bool) -> Result<()> {
             user_id: bot.user_id,
         },
     )?;
+    keys.save()?;
+    join_ops(&keys, &[bot.user_id]).await?;
     println!("bound {} as @{nick} (user {})", dir.display(), bot.user_id);
     Ok(())
 }
