@@ -44,12 +44,28 @@ enum Command {
     Provision,
     /// Listen to Zulip as every bot bound on this host and fill their inboxes
     Daemon,
+    /// Claude Code hooks: `wait` (asyncRewake on SessionStart and Stop) and
+    /// `context` (PostToolBatch). Exits 0 outside a bound session directory.
+    Hook {
+        /// `wait` or `context`
+        event: String,
+    },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Hooks bypass clap and the async runtime: they must start fast, and a
+    // usage error must not exit with 2 (see `hook::run`).
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("hook") {
+        std::process::exit(goniec::hook::run(args.get(2).map(String::as_str)));
+    }
     let cli = Cli::parse();
+    tokio::runtime::Runtime::new()?.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Hook { .. } => unreachable!("handled before clap"),
         Command::Send { to, text } => {
             let text = match text.as_deref() {
                 None | Some("-") => {

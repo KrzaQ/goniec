@@ -134,12 +134,27 @@ checked 2026-10-24 for version 2.1.310). Test them before relying on them.
 - **Not used:** Monitor (rejected by the user), channels (research preview,
   needs `--dangerously-load-development-channels` with a confirmation dialog
   at every start, and claude.ai login only), Remote Control (rejected).
-- **Risks to test first, in a throwaway session:**
-  - Claude Code enforces the hook `timeout` on `asyncRewake` hooks (default
-    600 s). If the watcher dies while the session is idle, nothing listens.
-    Find the largest timeout that works.
+- **The hook config.** `goniec hook wait` (with `"asyncRewake": true` and
+  `"timeout": 86400`) on `SessionStart` and `Stop`, and `goniec hook context`
+  on `PostToolBatch`. Both exit 0 at once outside a bound session directory,
+  so one config can serve every session.
+- **Measured on 2026-10-25,** in a session that ran Claude Code 2.1.302:
+  - A project `.claude/settings.local.json` added while the session ran took
+    effect at its next turn, without a restart.
+  - The watcher armed from `Stop` woke the idle session. Claude Code shows the
+    wake as "Stop hook feedback", and the model gets it as a system reminder.
+  - `"timeout": 86400` is accepted: the watcher still ran after 785 s, past
+    the default of 600 s. The real upper limit is not measured yet.
+  - `sh -c` runs the hook command directly: the watcher's parent is the
+    `claude` process. Hooks get `CLAUDE_PROJECT_DIR` (the project root, also
+    when the session changed directories). The Bash tool gets `CLAUDE_PID`
+    but not `CLAUDE_PROJECT_DIR`.
+- **Still to test:**
+  - Delivery while the session is busy, through `PostToolBatch`.
   - One unverified report says an `asyncRewake` hook on `SessionStart`
     blocked startup in 2.1.246. If that still happens, arm only from `Stop`.
+  - Whether Claude Code kills a running watcher when the session exits. The
+    watcher also ends by itself when its `claude` process is gone.
   - The docs do not say whether `--resume` re-reads hook config. A restart
     always does.
 
