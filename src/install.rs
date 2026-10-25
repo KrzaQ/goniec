@@ -123,10 +123,17 @@ pub fn install_hooks(install: bool) -> Result<bool> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("json.goniec-tmp");
+    // Write through a symlink (settings.json may point into a checkout), and
+    // keep the file's permissions: the rename would replace the link itself
+    // and give the file the default mode.
+    let target = fs::canonicalize(&path).unwrap_or(path);
+    let tmp = target.with_extension("json.goniec-tmp");
     fs::write(&tmp, serde_json::to_string_pretty(&after)? + "\n")
         .with_context(|| format!("cannot write {}", tmp.display()))?;
-    fs::rename(&tmp, &path).with_context(|| format!("cannot replace {}", path.display()))?;
+    if let Ok(meta) = fs::metadata(&target) {
+        fs::set_permissions(&tmp, meta.permissions())?;
+    }
+    fs::rename(&tmp, &target).with_context(|| format!("cannot replace {}", target.display()))?;
     Ok(true)
 }
 
