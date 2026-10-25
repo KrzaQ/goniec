@@ -2,6 +2,8 @@
 name = "goniec"
 version = "0.1.0"
 edition = "2024"
+description = "Carries chat messages between a user and AI agent sessions, over Zulip"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
