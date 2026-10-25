@@ -18,12 +18,22 @@ pub struct Binding {
 }
 
 /// The session's directory: `$GONIEC_DIR`, else `$CLAUDE_PROJECT_DIR` (the
-/// directory Claude Code started in), else the current directory.
+/// directory Claude Code started in, set for hooks), else the working
+/// directory of the `claude` process in `$CLAUDE_PID` (set for the Bash
+/// tool, Linux only), else the current directory.
 pub fn session_dir() -> Result<PathBuf> {
     for var in ["GONIEC_DIR", "CLAUDE_PROJECT_DIR"] {
         if let Some(dir) = std::env::var_os(var).filter(|d| !d.is_empty()) {
             return Ok(dir.into());
         }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = std::env::var("CLAUDE_PID")
+        .ok()
+        .filter(|p| p.parse::<u32>().is_ok())
+        && let Ok(dir) = fs::read_link(format!("/proc/{pid}/cwd"))
+    {
+        return Ok(dir);
     }
     Ok(std::env::current_dir()?)
 }
