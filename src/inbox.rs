@@ -112,6 +112,60 @@ impl Inbox {
         Ok(records)
     }
 
+    /// Take the oldest new messages whose text fits in `max_chars`, and say
+    /// how many are left. One message is always taken; if it alone is too
+    /// long, its content is cut. Returns `None` when nothing is new.
+    pub fn take_fitting(&self, nick: &str, max_chars: usize) -> Result<Option<String>> {
+        let ids = self.ids(NEW)?;
+        let mut chosen: Vec<Record> = Vec::new();
+        for &id in &ids {
+            let path = self.root.join(NEW).join(file_name(id));
+            let record: Record = match fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice(&bytes).context("bad message file")?,
+                Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            chosen.push(record);
+            let left = ids.len() - chosen.len();
+            if format_with_rest(nick, &chosen, left).chars().count() > max_chars {
+                chosen.pop();
+                break;
+            }
+        }
+        if chosen.is_empty() {
+            let Some(&first) = ids.first() else {
+                return Ok(None);
+            };
+            let path = self.root.join(NEW).join(file_name(first));
+            let mut record: Record = serde_json::from_slice(&fs::read(&path)?)?;
+            let room = max_chars.saturating_sub(format_with_rest(nick, &[], ids.len()).len() + 400);
+            let total = record.content.chars().count();
+            record.content = record.content.chars().take(room).collect();
+            record.content.push_str(&format!(
+                "\n[goniec: the message is cut here; {} characters are missing]",
+                total - room
+            ));
+            chosen.push(record);
+        }
+        let mut taken = Vec::new();
+        for record in chosen {
+            let name = file_name(record.id);
+            match fs::rename(
+                self.root.join(NEW).join(&name),
+                self.root.join(DELIVERED).join(&name),
+            ) {
+                Ok(()) => taken.push(record),
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context("cannot take a message"),
+            }
+        }
+        if taken.is_empty() {
+            return Ok(None);
+        }
+        let left = self.pending()?;
+        Ok(Some(format_with_rest(nick, &taken, left)))
+    }
+
     /// Messages that an agent has taken but Zulip does not know as read yet.
     pub fn delivered(&self) -> Result<Vec<u64>> {
         self.ids(DELIVERED)
@@ -137,6 +191,19 @@ impl Inbox {
         ids.sort_unstable();
         Ok(ids)
     }
+}
+
+/// `format`, plus a line about messages that did not fit.
+pub fn format_with_rest(nick: &str, records: &[Record], left: usize) -> String {
+    let mut out = format(nick, records);
+    match left {
+        0 => {}
+        1 => out.push_str("\n[goniec] 1 more message waits. Run `goniec read` to see it.\n"),
+        n => out.push_str(&format!(
+            "\n[goniec] {n} more messages wait. Run `goniec read` to see them.\n"
+        )),
+    }
+    out
 }
 
 /// The text an agent sees. Every content line is quoted with `> `, so a
@@ -222,6 +289,39 @@ mod tests {
         assert_eq!(inbox.delivered().unwrap(), [3, 17]);
         inbox.forget(&[3, 17]).unwrap();
         assert!(inbox.delivered().unwrap().is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn take_fitting_leaves_the_rest() {
+        let (root, inbox) = temp_inbox("fitting");
+        for id in 1..=3 {
+            inbox.put(&record(id)).unwrap();
+        }
+        let one = format_with_rest("acme", &[record(1)], 2).chars().count();
+        let text = inbox.take_fitting("acme", one + 10).unwrap().unwrap();
+        assert!(text.contains("message 1\n"));
+        assert!(!text.contains("message 2\n"));
+        assert!(text.contains("2 more messages wait"));
+        assert_eq!(inbox.pending().unwrap(), 2);
+
+        let all = inbox.take_fitting("acme", 100_000).unwrap().unwrap();
+        assert!(all.contains("message 2\n") && all.contains("message 3\n"));
+        assert!(!all.contains("more message"));
+        assert!(inbox.take_fitting("acme", 100_000).unwrap().is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn take_fitting_cuts_a_long_message() {
+        let (root, inbox) = temp_inbox("cut");
+        let mut long = record(5);
+        long.content = "x".repeat(5000);
+        inbox.put(&long).unwrap();
+        let text = inbox.take_fitting("acme", 1000).unwrap().unwrap();
+        assert!(text.chars().count() <= 1000);
+        assert!(text.contains("the message is cut here"));
+        assert_eq!(inbox.pending().unwrap(), 0);
         fs::remove_dir_all(&root).unwrap();
     }
 
