@@ -36,18 +36,28 @@ The name is Polish for a courier who runs messages.
 
 - **Nickname.** Every agent speaks as its own Zulip bot. Nicknames tell the
   user who said what. They are not a security boundary (see *Security*).
-- **Named session.** A session with a nickname, for example one per customer.
-  The nickname comes from a marker file in the project directory (working
-  name `.chat-nick`, like the user's `.tmux-name`). A named session has a
-  permanent bot. Messages for it queue in its inbox while it is offline (a
-  "tombstone"), and arrive when it starts again.
-- **Throwaway session.** A session without a nickname. It leases a guest bot
-  from a fixed pool (`tmp-1` … `tmp-9`), IRC style. It exists only while it runs.
-  Its display name or status shows what the session is (for example the
-  directory). A message to an offline guest bounces with "tmp-N is offline".
-  Nothing queues for it. A pool is needed because Zulip cannot delete users,
-  only deactivate them. One bot per throwaway session would pile up dead
-  accounts.
+- **Bound session.** A session whose directory has a `.goniec` file. The file
+  holds the nickname and the bot's Zulip user ID. Each bound directory has its
+  own permanent bot, for example one per customer. Messages for it queue in
+  its inbox while it is offline, and arrive when it starts again.
+- **Binding.** `goniec bind [nick]` creates the bot, writes `.goniec`, and
+  stores the bot's key on this host. The nickname defaults to the basename of
+  the directory, like the user's `tm` and `.tmux-session`. Creating a bot
+  needs the owner key, so each `bind` is one rosa approval for the user. goniec
+  never creates a bot without one.
+- **Identity check.** At startup goniec asks Zulip whose key it holds
+  (`GET /users/me`) and compares the user ID with `.goniec`. A wrong key or a
+  copied `.goniec` fails the check. The file holds an ID, not a value derived
+  from the key, so regenerating a key does not break the binding.
+- **Guest session.** A session without `.goniec`. All guests share one bot,
+  `@guest`. Each guest message starts with a `host:dir` line, so the user can
+  tell the guests apart. Guests poll: `goniec read` asks Zulip for new
+  messages in the guest's topics since its last read. A guest has no inbox,
+  no watcher and no daemon, and sees a reply only when it next reads. The
+  harness tells guests to poll. Several sessions in one directory (the
+  `temp` sessions under `/srv/data`) stay guests, so they never claim the
+  same nickname. A shared guest also means no dead bots pile up: Zulip
+  cannot delete users, only deactivate them.
 - **Rooms.** Zulip streams and topics. An `#ops` stream for announcements, and
   one stream per customer that only that customer's agent, the build agent
   and the user join. Topics hold one job each ("PHP 8.5.12 rollout"). Stream
@@ -61,16 +71,22 @@ Zulip ──event queue──▶ goniec daemon ──▶ inbox/<nick>/   (spool 
                             │                 ├─▶ Claude Code: asyncRewake watcher (idle)
                             │                 │                PostToolBatch hook   (busy)
                             │                 └─▶ other harnesses: tmux nudge + `goniec read`
-                            └── leases, presence, bounce for offline guests
+                            └── presence
 
-agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot
+agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @guest)
 ```
 
 - **CLI and MCP server.** The same operations for every harness: send, read,
-  list rooms, who is online, lease and release a guest nickname.
-- **Daemon.** It reads Zulip's real-time event queue for all bots and writes
-  each message to the inbox of each recipient. It keeps the guest leases. It
-  reclaims a lease when the owning process is gone.
+  list rooms, who is online, bind a directory.
+- **Hosts.** The user's agents run on fewer than 5 computers. Each host runs
+  its own daemon. A bot's key lives on exactly one host, and only that host's
+  daemon listens as that bot. Zulip delivers every event to every queue
+  registered for a bot, so the same key on two hosts would deliver every
+  message twice. For a session on another host, `goniec bind` runs on this
+  host (where rosa holds the owner key), and the user copies the key over.
+  The `@guest` key is on every host, because guests only poll.
+- **Daemon.** It reads Zulip's real-time event queue for each bot bound on its
+  host and writes each message to the inbox of each recipient.
 - **Inbox.** One spool directory per nickname. Delivery moves a file to
   `delivered/`, so a message reaches an agent once, whichever path delivers it.
 - **Message records.** Each inbox file keeps the stream, the topic, the
@@ -161,7 +177,7 @@ So goniec uses two kinds of key:
   policy, so the user approves each use in the rosa terminal. goniec asks the
   rosa socket for the key and never stores it.
 - **Bot keys** for everything else. The `admin` bot has the administrator
-  role. It creates channels and renames guest bots for their leases.
+  role. It creates channels and deactivates bots.
 
 ## Security
 
@@ -178,10 +194,10 @@ So goniec uses two kinds of key:
 ## Plan
 
 1. ~~Zulip admin access for goniec.~~ Done: see *Zulip permissions*.
-2. Bots: `admin` and one test nickname. The `tmp-1` … `tmp-9` pool. The `#ops`
-   stream. `goniec provision` does this with the owner key from rosa.
-3. `goniec` CLI: send, read, rooms, who.
-4. Daemon: the event queue, the inbox and the guest leases.
+2. Bots: `admin`, `@guest` and one test nickname. The `#ops` stream.
+   `goniec provision` and `goniec bind` do this with the owner key from rosa.
+3. `goniec` CLI: send, read, rooms, who, bind. The identity check.
+4. Daemon: the event queue and the inbox.
 5. The `asyncRewake` test in a throwaway Claude Code session (see *Risks*).
 6. The Claude Code hooks, then the tmux nudge for the other harnesses.
 7. The MCP server, built on the CLI library.
