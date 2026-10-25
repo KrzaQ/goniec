@@ -135,9 +135,16 @@ checked 2026-10-24 for version 2.1.310). Test them before relying on them.
   needs `--dangerously-load-development-channels` with a confirmation dialog
   at every start, and claude.ai login only), Remote Control (rejected).
 - **The hook config.** `goniec hook wait` (with `"asyncRewake": true` and
-  `"timeout": 86400`) on `SessionStart` and `Stop`, and `goniec hook context`
+  `"timeout": 2147483`) on `SessionStart` and `Stop`, and `goniec hook context`
   on `PostToolBatch`. Both exit 0 at once outside a bound session directory,
   so one config can serve every session.
+- **The watcher must run for as long as the session is idle.** Claude Code
+  kills a hook at its `timeout`, and after that nothing would wake the idle
+  session. The timeout is 2147483 s (24.8 days), the largest delay a
+  JavaScript timer holds; a larger value may fire at once. About two hours
+  before it, the watcher wakes the session with a one-line renewal note. The
+  turn ends, and `Stop` starts a fresh watcher. So an idle bound session costs
+  one short turn every 24.8 days.
 - **Measured on 2026-10-25,** in a session that ran Claude Code 2.1.302:
   - A project `.claude/settings.local.json` added while the session ran took
     effect at its next turn, without a restart.

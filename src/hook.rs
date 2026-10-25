@@ -7,7 +7,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use serde::Deserialize;
@@ -21,6 +21,14 @@ const MAX_CHARS: usize = 9_000;
 
 /// How often the watcher looks at the inbox.
 const POLL: Duration = Duration::from_secs(1);
+
+/// The hook config sets `"timeout": 2147483` (24.8 days) for the watcher.
+/// That is the largest delay a JavaScript timer holds (2^31 - 1 ms); a larger
+/// value may fire at once. Claude Code kills a watcher at its timeout, so the
+/// watcher wakes the session itself about two hours before that, the turn
+/// ends, and `Stop` starts a fresh watcher. `GONIEC_RENEW_SECS` overrides
+/// this, for tests.
+const RENEW_AFTER: Duration = Duration::from_secs(2_140_000);
 
 /// The exit code that wakes Claude Code from an `asyncRewake` hook.
 const EXIT_WAKE: i32 = 2;
@@ -140,12 +148,23 @@ fn wait_for_messages() -> Result<Option<String>> {
         return Ok(None);
     }
     let owner = Owner::find();
+    let renew_after = std::env::var("GONIEC_RENEW_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(RENEW_AFTER, Duration::from_secs);
+    let started = Instant::now();
     loop {
         if let Some(text) = inbox.take_fitting(&nick, MAX_CHARS)? {
             return Ok(Some(text));
         }
         if !owner.alive() {
             return Ok(None);
+        }
+        if started.elapsed() >= renew_after {
+            return Ok(Some(format!(
+                "[goniec] Renewing the chat watcher for @{nick}. There are no messages. \
+                 No action is needed: end the turn.\n"
+            )));
         }
         sleep(POLL);
     }
