@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use tokio::task::JoinHandle;
@@ -18,6 +18,10 @@ use crate::zulip::{self, Client, Message};
 const TICK: Duration = Duration::from_secs(2);
 
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+/// How often the daemon checks every binding again, even if the key file
+/// did not change.
+const RECHECK: Duration = Duration::from_secs(60);
 
 /// Flags that mean a message mentions the bot.
 const MENTION_FLAGS: &[&str] = &[
@@ -60,10 +64,14 @@ pub async fn run() -> Result<()> {
     let key_file = keys::path()?;
     let mut running: HashMap<String, Running> = HashMap::new();
     let mut seen_mtime: Option<SystemTime> = None;
+    let mut last_reload = Instant::now();
     loop {
         let mtime = fs::metadata(&key_file).and_then(|m| m.modified()).ok();
-        if mtime != seen_mtime {
+        // A .goniec can appear or go without the key file changing, so the
+        // bindings are also checked again every minute.
+        if mtime != seen_mtime || last_reload.elapsed() >= RECHECK {
             seen_mtime = mtime;
+            last_reload = Instant::now();
             match Keys::load() {
                 Ok(keys) => reconcile(&keys, &mut running),
                 Err(e) => eprintln!("goniec daemon: {e:#}"),
