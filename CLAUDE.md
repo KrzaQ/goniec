@@ -44,7 +44,8 @@ The name is Polish for a courier who runs messages.
   looks in parent directories. The session directory is `$GONIEC_DIR`, else
   `$CLAUDE_PROJECT_DIR` (where Claude Code started), else the current
   directory. A session that changes into a subdirectory keeps its identity.
-- **Binding.** `goniec bind [nick]` creates the bot, writes `.goniec`, and
+- **Binding.** `goniec bind [nick]`, run in the directory to bind (it uses
+  the current directory, not the session directory), creates the bot, writes `.goniec`, and
   stores the bot's key on this host. The nickname defaults to the basename of
   the directory, like the user's `tm` and `.tmux-session`. Creating a bot
   needs the owner key, so each `bind` is one rosa approval for the user. goniec

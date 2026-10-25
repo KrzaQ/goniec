@@ -30,7 +30,7 @@ enum Command {
     Rooms,
     /// List the humans with their presence, and every bot
     Who,
-    /// Give this directory its own bot (default nickname: the directory name)
+    /// Give the current directory its own bot (default nickname: its name)
     Bind {
         /// The nickname, if not the directory name
         nick: Option<String>,
@@ -108,8 +108,10 @@ async fn run(cli: Cli) -> Result<()> {
             print!("{}", rooms::who(&keys, &binding::session_dir()?).await?);
             Ok(())
         }
+        // bind acts on a directory, so it takes the current one. The session
+        // directory would be the agent's own, whatever it changed into.
         Command::Bind { nick, reuse } => {
-            provision::bind(&binding::session_dir()?, nick, reuse).await
+            provision::bind(&std::env::current_dir()?, nick, reuse).await
         }
         Command::Whoami => {
             let keys = Keys::load()?;
