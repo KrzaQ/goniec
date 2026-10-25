@@ -44,6 +44,12 @@ enum Command {
     Provision,
     /// Listen to Zulip as every bot bound on this host and fill their inboxes
     Daemon,
+    /// Add goniec's hooks to Claude Code's global settings, or remove them
+    InstallHooks {
+        /// Remove goniec's hooks instead
+        #[arg(long)]
+        remove: bool,
+    },
     /// Claude Code hooks: `wait` (asyncRewake on SessionStart and Stop) and
     /// `context` (PostToolBatch). Exits 0 outside a bound session directory.
     Hook {
@@ -120,6 +126,20 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Provision => provision::provision().await,
+        Command::InstallHooks { remove } => {
+            let path = goniec::install::settings_path()?;
+            let changed = goniec::install::install_hooks(!remove)?;
+            let what = if remove {
+                "removed from"
+            } else {
+                "installed in"
+            };
+            match changed {
+                true => println!("goniec hooks {what} {}", path.display()),
+                false => println!("{} already as wanted; not changed", path.display()),
+            }
+            Ok(())
+        }
         Command::Daemon => {
             let result = daemon::run().await;
             if let Err(e) = &result

@@ -137,7 +137,17 @@ checked 2026-10-24 for version 2.1.310). Test them before relying on them.
 - **The hook config.** `goniec hook wait` (with `"asyncRewake": true` and
   `"timeout": 2147483`) on `SessionStart` and `Stop`, and `goniec hook context`
   on `PostToolBatch`. Both exit 0 at once outside a bound session directory,
-  so one config can serve every session.
+  so one config can serve every session. It lives in the user's global
+  `~/.claude/settings.json`. `goniec install-hooks` adds it on each machine
+  (dotfiles' `bootstrap-goniec` runs it), and `--remove` takes it out. It
+  adds, replaces or removes only goniec's own entries (a command with
+  `goniec` and `hook wait` or `hook context`), never a whole event list, so
+  the user's other hooks on the same events stay. claude-setup does not sync
+  `hooks`, because its sync replaces whole keys. Each command
+  is guarded, so it does nothing on a machine without goniec:
+  `g=$(command -v goniec || echo "$HOME/.cargo/bin/goniec"); [ -x "$g" ] ||
+  exit 0; exec "$g" hook wait`. The `exec` passes exit code 2 through; an
+  `|| true` wrapper would swallow the wake signal.
 - **The watcher must run for as long as the session is idle.** Claude Code
   kills a hook at its `timeout`, and after that nothing would wake the idle
   session. The timeout is 2147483 s (24.8 days), the largest delay a
