@@ -1,15 +1,20 @@
 //! A thin client for the parts of the Zulip REST API that goniec uses.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The role value for an organization administrator.
 pub const ROLE_ADMINISTRATOR: u16 = 200;
+
+/// Zulip sends a heartbeat about once a minute, so a long poll that takes
+/// longer than this has lost its connection.
+const LONG_POLL_SECS: u64 = 120;
 
 /// The bot type for a generic bot.
 const BOT_TYPE_GENERIC: u8 = 1;
@@ -128,6 +133,63 @@ impl Client {
         call(self.request(reqwest::Method::GET, "/realm/presence")).await
     }
 
+    /// Register an event queue for new messages.
+    pub async fn register(&self) -> Result<Queue> {
+        let form = [
+            ("event_types", r#"["message"]"#),
+            ("apply_markdown", "false"),
+        ];
+        call(self.request(reqwest::Method::POST, "/register").form(&form)).await
+    }
+
+    /// Wait for events after `last_event_id`. Zulip answers within about a
+    /// minute even when nothing happens, with a heartbeat event.
+    pub async fn events(&self, queue_id: &str, last_event_id: i64) -> Result<Vec<Event>> {
+        let last = last_event_id.to_string();
+        let query = [("queue_id", queue_id), ("last_event_id", &last)];
+        let request = self
+            .request(reqwest::Method::GET, "/events")
+            .query(&query)
+            .timeout(Duration::from_secs(LONG_POLL_SECS));
+        let events: Events = call(request).await?;
+        Ok(events.events)
+    }
+
+    /// Messages that match all `narrow` terms (`(operator, operand)`), from
+    /// the first unread one on.
+    pub async fn unread_messages(&self, narrow: &[(&str, &str)]) -> Result<Vec<Message>> {
+        let terms: Vec<Value> = std::iter::once(("is", "unread"))
+            .chain(narrow.iter().copied())
+            .map(|(operator, operand)| serde_json::json!({ "operator": operator, "operand": operand }))
+            .collect();
+        let narrow = Value::Array(terms).to_string();
+        let query = [
+            ("anchor", "first_unread"),
+            ("num_before", "0"),
+            ("num_after", "1000"),
+            ("apply_markdown", "false"),
+            ("narrow", &narrow),
+        ];
+        let messages: Messages = call(
+            self.request(reqwest::Method::GET, "/messages")
+                .query(&query),
+        )
+        .await?;
+        Ok(messages.messages)
+    }
+
+    /// Mark messages as read for this client's user.
+    pub async fn mark_read(&self, ids: &[u64]) -> Result<()> {
+        let form = [
+            ("messages", serde_json::to_string(ids)?),
+            ("op", "add".to_owned()),
+            ("flag", "read".to_owned()),
+        ];
+        let request = self.request(reqwest::Method::POST, "/messages/flags");
+        let _: Value = call(request.form(&form)).await?;
+        Ok(())
+    }
+
     /// All active users in the realm, bots included.
     pub async fn users(&self) -> Result<Vec<User>> {
         let users: Users = call(self.request(reqwest::Method::GET, "/users")).await?;
@@ -213,8 +275,83 @@ async fn call<T: DeserializeOwned>(request: reqwest::RequestBuilder) -> Result<T
         .await
         .with_context(|| format!("Zulip answered {status} without JSON"))?;
     if body["result"] != "success" {
-        let msg = body["msg"].as_str().unwrap_or("no message");
-        bail!("Zulip answered {status}: {msg}");
+        return Err(ApiError {
+            status: status.as_u16(),
+            code: body["code"].as_str().unwrap_or("").to_owned(),
+            msg: body["msg"].as_str().unwrap_or("no message").to_owned(),
+        }
+        .into());
     }
     serde_json::from_value(body).context("unexpected answer from Zulip")
+}
+
+/// An error answer from Zulip. `code` is Zulip's machine-readable error
+/// code, for example `BAD_EVENT_QUEUE_ID`.
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: u16,
+    pub code: String,
+    pub msg: String,
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Zulip answered {}: {}", self.status, self.msg)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+/// True when Zulip no longer knows the event queue, so it must be
+/// registered again.
+pub fn is_bad_queue(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<ApiError>()
+        .is_some_and(|e| e.code == "BAD_EVENT_QUEUE_ID")
+}
+
+#[derive(Deserialize)]
+pub struct Queue {
+    pub queue_id: String,
+    pub last_event_id: i64,
+}
+
+#[derive(Deserialize)]
+struct Events {
+    events: Vec<Event>,
+}
+
+/// One event. goniec registers for messages only; everything else, such as
+/// a heartbeat, has no `message`.
+#[derive(Deserialize)]
+pub struct Event {
+    pub id: i64,
+    pub message: Option<Message>,
+    #[serde(default)]
+    pub flags: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Messages {
+    messages: Vec<Message>,
+}
+
+#[derive(Deserialize)]
+pub struct Message {
+    pub id: u64,
+    pub sender_id: u64,
+    pub sender_full_name: String,
+    pub timestamp: i64,
+    /// `stream` or `private`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The channel name for a channel message, a list of users otherwise.
+    pub display_recipient: Value,
+    /// The topic. Empty for a direct message.
+    #[serde(default)]
+    pub subject: String,
+    pub content: String,
+    /// Set in `GET /messages` answers. In events the flags come with the
+    /// event instead.
+    #[serde(default)]
+    pub flags: Vec<String>,
 }
