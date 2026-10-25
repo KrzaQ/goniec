@@ -256,7 +256,8 @@ pub fn format(nick: &str, records: &[Record]) -> String {
 fn reply_target(r: &Record) -> String {
     match (&r.channel, &r.topic) {
         (Some(channel), Some(topic)) => format!("#{channel}>{topic}"),
-        _ => format!("@{}", r.sender_name),
+        // A full name is not unique; the user ID is.
+        _ => format!("user:{}", r.sender_id),
     }
 }
 
@@ -352,7 +353,7 @@ mod tests {
         let mut direct = record(18);
         direct.channel = None;
         direct.topic = None;
-        assert!(format("acme", &[direct]).contains("reply: goniec send '@alice' 'your text'"));
+        assert!(format("acme", &[direct]).contains("reply: goniec send 'user:8' 'your text'"));
         let mut quoted = record(19);
         quoted.topic = Some("it's done".into());
         assert!(format("acme", &[quoted]).contains(r"reply: goniec send '#ops>it'\''s done'"));

@@ -12,10 +12,19 @@ use crate::zulip::{Client, User};
 pub enum Target {
     Channel { channel: String, topic: String },
     User(String),
+    UserId(u64),
 }
 
-/// `#channel>topic` names a channel topic. `@name` or `name` names a user.
+/// `#channel>topic` names a channel topic. `user:<id>` names a user by Zulip
+/// user ID, which is unique. `@name` or `name` names a user by nickname or
+/// full name.
 pub fn parse_target(to: &str) -> Result<Target> {
+    if let Some(id) = to.strip_prefix("user:") {
+        return match id.trim().parse() {
+            Ok(id) => Ok(Target::UserId(id)),
+            Err(_) => bail!("bad user ID in {to:?}: use user:<number>"),
+        };
+    }
     if let Some(rest) = to.strip_prefix('#') {
         match rest.split_once('>') {
             Some((channel, topic)) if !channel.trim().is_empty() && !topic.trim().is_empty() => {
@@ -98,6 +107,7 @@ pub async fn send(keys: &Keys, session_dir: &Path, to: &str, text: &str) -> Resu
             let user = resolve(&users, &name)?;
             client.send_direct(user.user_id, &content).await
         }
+        Target::UserId(id) => client.send_direct(id, &content).await,
     }
 }
 
@@ -116,6 +126,8 @@ mod tests {
         );
         assert_eq!(parse_target("@acme").unwrap(), Target::User("acme".into()));
         assert_eq!(parse_target("acme").unwrap(), Target::User("acme".into()));
+        assert_eq!(parse_target("user:8").unwrap(), Target::UserId(8));
+        assert!(parse_target("user:x").is_err());
         assert!(parse_target("#ops").is_err());
         assert!(parse_target("#ops>").is_err());
         assert!(parse_target("#>topic").is_err());

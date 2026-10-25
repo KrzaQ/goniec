@@ -19,7 +19,7 @@ struct Cli {
 enum Command {
     /// Send a message to a channel topic or to a nickname
     Send {
-        /// `#channel>topic`, `@nick` or a human's full name
+        /// `#channel>topic`, `user:<id>`, `@nick` or a human's full name
         to: String,
         /// The message text; `-` or nothing reads it from stdin
         text: Option<String>,
