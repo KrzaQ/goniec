@@ -113,6 +113,51 @@ impl Client {
         let _: Value = call(request.form(&form)).await?;
         Ok(())
     }
+
+    /// All active users in the realm, bots included.
+    pub async fn users(&self) -> Result<Vec<User>> {
+        let users: Users = call(self.request(reqwest::Method::GET, "/users")).await?;
+        Ok(users.members.into_iter().filter(|u| u.is_active).collect())
+    }
+
+    /// Post to a channel topic. Returns the message ID.
+    pub async fn send_to_channel(&self, channel: &str, topic: &str, content: &str) -> Result<u64> {
+        let form = [
+            ("type", "stream"),
+            ("to", channel),
+            ("topic", topic),
+            ("content", content),
+        ];
+        let sent: Sent = call(self.request(reqwest::Method::POST, "/messages").form(&form)).await?;
+        Ok(sent.id)
+    }
+
+    /// Send a direct message to one user. Returns the message ID.
+    pub async fn send_direct(&self, user_id: u64, content: &str) -> Result<u64> {
+        let to = format!("[{user_id}]");
+        let form = [("type", "direct"), ("to", &to), ("content", content)];
+        let sent: Sent = call(self.request(reqwest::Method::POST, "/messages").form(&form)).await?;
+        Ok(sent.id)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct User {
+    pub user_id: u64,
+    pub email: String,
+    pub full_name: String,
+    pub is_bot: bool,
+    pub is_active: bool,
+}
+
+#[derive(Deserialize)]
+struct Users {
+    members: Vec<User>,
+}
+
+#[derive(Deserialize)]
+struct Sent {
+    id: u64,
 }
 
 /// Send a request and decode Zulip's `{"result": ..., "msg": ...}` envelope.
