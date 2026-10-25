@@ -204,6 +204,18 @@ pub async fn identity(keys: &Keys, cwd: &Path) -> Result<Identity> {
                     bot.user_id
                 );
             }
+            // A .goniec copied to another directory has the right ID, so
+            // also check the directory that `bind` recorded.
+            if bot.dir.as_deref() != Some(dir.as_path()) {
+                bail!(
+                    "@{} is bound to {}, not to {}",
+                    binding.nick,
+                    bot.dir
+                        .as_deref()
+                        .map_or("no directory".into(), |d| d.display().to_string()),
+                    dir.display()
+                );
+            }
             (binding.nick, Some(dir))
         }
         None => ("guest".to_owned(), None),
