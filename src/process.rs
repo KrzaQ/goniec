@@ -27,6 +27,30 @@ pub struct Owner {
     pub start: u64,
 }
 
+/// The nearest ancestor process named `claude`, found through the process
+/// tree only. Unlike `Owner::find`, no environment variable can point it
+/// elsewhere.
+#[cfg(target_os = "linux")]
+pub fn claude_ancestor() -> Option<u32> {
+    let mut pid = std::os::unix::process::parent_id();
+    for _ in 0..16 {
+        let stat = Stat::read(pid)?;
+        if stat.comm == "claude" {
+            return Some(pid);
+        }
+        if stat.ppid <= 1 {
+            return None;
+        }
+        pid = stat.ppid;
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn claude_ancestor() -> Option<u32> {
+    None
+}
+
 #[cfg(target_os = "linux")]
 impl Owner {
     /// `$CLAUDE_PID`, else the nearest ancestor named `claude`, else the

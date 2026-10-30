@@ -132,7 +132,12 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
   2026-10-30).
 - **`goniec send --attach <file>`** uploads files and links them. It takes
   only files under the session directory or the session's own temp
-  directory (its scratchpad is there), after following links.
+  directory (its scratchpad is there), after following links. goniec
+  takes the session ID for that from Claude Code's registry entry for its
+  `claude` ancestor process (`~/.claude/sessions/<pid>.json`), never from
+  `CLAUDE_CODE_SESSION_ID` alone, which a command can set to another
+  session's ID. Measured on 2026-10-30: such an env-prefixed command does
+  not match `Bash(goniec send *)` anyway; Claude Code asks for it.
   `Bash(goniec send *)` runs without asking, so without this limit a chat
   message could talk an agent into posting any file the user can read,
   keys included. Not all of `/tmp`: it holds every Claude session's

@@ -86,14 +86,38 @@ pub fn files_dir(project_dir: &Path, session_id: &str) -> PathBuf {
     session_tmp(project_dir, session_id).join("goniec")
 }
 
-/// The calling session's own files directory and temp directory: from
-/// Claude Code's `CLAUDE_CODE_SESSION_ID`, which its Bash tool sets.
-pub fn current_session(project_dir: &Path) -> Option<(PathBuf, PathBuf)> {
-    let id = std::env::var("CLAUDE_CODE_SESSION_ID").ok()?;
+/// The Claude Code session this process runs in.
+pub struct Session {
+    /// Where its files from the chat go.
+    pub files: PathBuf,
+    /// Its own temp directory.
+    pub tmp: PathBuf,
+    /// The ID comes from Claude Code's registry entry for the `claude`
+    /// process above this one, not from the environment. Only then may
+    /// `--attach` take files from `tmp`: a command can set any environment
+    /// variable, for example another session's ID.
+    pub verified: bool,
+}
+
+/// The calling session: from Claude Code's registry entry for the `claude`
+/// ancestor process, else from `CLAUDE_CODE_SESSION_ID`, which its Bash
+/// tool sets.
+pub fn current_session(project_dir: &Path) -> Option<Session> {
+    let registered = crate::process::claude_ancestor().and_then(|pid| {
+        let path = std::env::home_dir()?.join(format!(".claude/sessions/{pid}.json"));
+        let entry: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+        entry["sessionId"].as_str().map(str::to_owned)
+    });
+    let verified = registered.is_some();
+    let id = registered.or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())?;
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return None;
     }
-    Some((files_dir(project_dir, &id), session_tmp(project_dir, &id)))
+    Some(Session {
+        files: files_dir(project_dir, &id),
+        tmp: session_tmp(project_dir, &id),
+        verified,
+    })
 }
 
 /// Set `files` of each record, and of its attached earlier messages, to

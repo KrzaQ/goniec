@@ -97,7 +97,11 @@ pub async fn send(
     // The session directory, and the session's own temp directory, where
     // its scratchpad is.
     let mut roots = vec![session_dir.to_owned()];
-    roots.extend(uploads::current_session(session_dir).map(|(_, tmp)| tmp));
+    roots.extend(
+        uploads::current_session(session_dir)
+            .filter(|s| s.verified)
+            .map(|s| s.tmp),
+    );
     let files = attach
         .iter()
         .map(|f| uploads::check_attachment(f, &roots))

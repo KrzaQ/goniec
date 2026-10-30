@@ -159,11 +159,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let mut records = records;
             let mut errors = Vec::new();
-            if let Some((files, _)) = goniec::uploads::current_session(&binding::session_dir()?) {
-                goniec::uploads::assign(&mut records, &files);
+            if let Some(session) = goniec::uploads::current_session(&binding::session_dir()?) {
+                goniec::uploads::assign(&mut records, &session.files);
                 let client =
                     goniec::zulip::Client::new(&keys.site, &id.bot.email, &id.bot.api_key)?;
-                errors = goniec::uploads::save_all(&client, &records, &files).await;
+                errors = goniec::uploads::save_all(&client, &records, &session.files).await;
             }
             if !records.is_empty() {
                 print!("{}", inbox::format(&id.nick, &records));

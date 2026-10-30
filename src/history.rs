@@ -105,9 +105,9 @@ pub async fn read(
     // Files go to the calling session's temp directory. Outside a Claude
     // Code session the links in the text are all there is.
     let mut errors = Vec::new();
-    if let Some((files, _)) = crate::uploads::current_session(session_dir) {
-        crate::uploads::assign(&mut records, &files);
-        errors = crate::uploads::save_all(&client, &records, &files).await;
+    if let Some(session) = crate::uploads::current_session(session_dir) {
+        crate::uploads::assign(&mut records, &session.files);
+        errors = crate::uploads::save_all(&client, &records, &session.files).await;
     }
     // The canonical form, so `earlier:` names the thread the same way
     // whichever form the caller used.
