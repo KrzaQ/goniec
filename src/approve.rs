@@ -14,7 +14,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::keys::Bot;
-use crate::zulip::Client;
+use crate::zulip::{Client, Queue};
 
 /// Emoji code points of the two answers, and their Zulip names.
 const ALLOW_CODE: &str = "2705";
@@ -29,6 +29,31 @@ const WAIT: Duration = Duration::from_secs(14 * 60);
 
 /// How much of a tool's input the question shows.
 const MAX_INPUT_CHARS: usize = 1500;
+
+/// Where the question goes: the topic where the user is talking to the
+/// session, or a direct message to the trusted user.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Place {
+    Topic { channel: String, topic: String },
+    Direct,
+}
+
+impl Place {
+    /// From `GONIEC_REPLY_TO`, which goniec sets when it starts a headless
+    /// session: `#channel>topic` for a topic, anything else for a direct
+    /// message to the trusted user.
+    pub fn from_env() -> Self {
+        match std::env::var("GONIEC_REPLY_TO")
+            .ok()
+            .and_then(|to| crate::send::parse_target(&to).ok())
+        {
+            Some(crate::send::Target::Channel { channel, topic }) => {
+                Place::Topic { channel, topic }
+            }
+            _ => Place::Direct,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Answer {
@@ -118,6 +143,7 @@ pub async fn ask(
     nick: &str,
     bot: &Bot,
     trusted_user_id: u64,
+    place: &Place,
     tool_name: &str,
     input: &Value,
 ) -> Result<Answer> {
@@ -126,6 +152,10 @@ pub async fn ask(
         .and_then(|s| s.parse().ok())
         .map_or(WAIT, Duration::from_secs);
     let client = Client::new(site, &bot.email, &bot.api_key)?;
+    // A bot gets the reaction events of a channel only as a subscriber.
+    if let Place::Topic { channel, .. } = place {
+        client.subscribe(channel, "", &[bot.user_id]).await?;
+    }
     // Register before asking, so that even an instant answer is in the queue.
     let queue = client.register_for(&["message", "reaction"]).await?;
     let code = new_code();
@@ -136,7 +166,7 @@ pub async fn ask(
         describe(tool_name, input),
         duration_text(wait),
     );
-    let message_id = client.send_direct(trusted_user_id, &question).await?;
+    let message_id = post(&client, place, trusted_user_id, &question).await?;
     // Without the reactions, the typed answer still works.
     for name in [ALLOW_NAME, DENY_NAME] {
         if let Err(e) = client.add_reaction(message_id, name).await {
@@ -144,39 +174,63 @@ pub async fn ask(
         }
     }
 
-    let answer = wait_for_answer(
-        &client,
-        &queue.queue_id,
-        queue.last_event_id,
+    let asked = Asked {
         message_id,
         trusted_user_id,
-        &code,
-        wait,
-    )
-    .await;
+        place,
+        code: &code,
+    };
+    let answer = wait_for_answer(&client, &queue, &asked, wait).await;
     let _ = client.delete_queue(&queue.queue_id).await;
     let answer = answer?;
     let note = match &answer {
         Answer::Allow => format!("✅ Allowed (request {code})."),
         Answer::Deny(why) => format!("❌ Denied (request {code}): {why}."),
     };
-    let _ = client.send_direct(trusted_user_id, &note).await;
+    let _ = post(&client, place, trusted_user_id, &note).await;
     Ok(answer)
+}
+
+async fn post(client: &Client, place: &Place, trusted_user_id: u64, text: &str) -> Result<u64> {
+    match place {
+        Place::Topic { channel, topic } => client.send_to_channel(channel, topic, text).await,
+        Place::Direct => client.send_direct(trusted_user_id, text).await,
+    }
+}
+
+/// The message is a typed answer in the place where the question was asked.
+fn in_place(m: &crate::zulip::Message, place: &Place) -> bool {
+    match place {
+        Place::Topic { channel, topic } => {
+            m.kind == "stream"
+                && m.display_recipient.as_str() == Some(channel.as_str())
+                && &m.subject == topic
+        }
+        Place::Direct => m.kind == "private",
+    }
+}
+
+/// The question that was asked, and who may answer it where.
+struct Asked<'a> {
+    message_id: u64,
+    trusted_user_id: u64,
+    place: &'a Place,
+    code: &'a str,
 }
 
 async fn wait_for_answer(
     client: &Client,
-    queue_id: &str,
-    mut last_event_id: i64,
-    message_id: u64,
-    trusted_user_id: u64,
-    code: &str,
+    queue: &Queue,
+    asked: &Asked<'_>,
     wait: Duration,
 ) -> Result<Answer> {
+    let mut last_event_id = queue.last_event_id;
     let deadline = tokio::time::Instant::now() + wait;
     loop {
         let events =
-            match tokio::time::timeout_at(deadline, client.events(queue_id, last_event_id)).await {
+            match tokio::time::timeout_at(deadline, client.events(&queue.queue_id, last_event_id))
+                .await
+            {
                 Ok(events) => events?,
                 Err(_) => {
                     return Ok(Answer::Deny(format!(
@@ -189,8 +243,8 @@ async fn wait_for_answer(
             last_event_id = last_event_id.max(event.id);
             if event.kind == "reaction"
                 && event.op.as_deref() == Some("add")
-                && event.user_id == Some(trusted_user_id)
-                && event.message_id == Some(message_id)
+                && event.user_id == Some(asked.trusted_user_id)
+                && event.message_id == Some(asked.message_id)
             {
                 match event.emoji_code.as_deref() {
                     Some(ALLOW_CODE) => return Ok(Answer::Allow),
@@ -201,10 +255,10 @@ async fn wait_for_answer(
                 }
             }
             if let Some(m) = event.message
-                && m.sender_id == trusted_user_id
-                && m.kind == "private"
+                && m.sender_id == asked.trusted_user_id
+                && in_place(&m, asked.place)
             {
-                match parse_reply(&m.content, code) {
+                match parse_reply(&m.content, asked.code) {
                     Some(true) => return Ok(Answer::Allow),
                     Some(false) => return Ok(Answer::Deny("the user denied it in Zulip".into())),
                     None => {}

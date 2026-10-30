@@ -109,6 +109,7 @@ fn ask_trusted_user(input: &Input) -> Result<Option<approve::Answer>> {
         &binding.nick,
         bot,
         trusted,
+        &approve::Place::from_env(),
         &input.tool_name,
         &input.tool_input,
     ))?;

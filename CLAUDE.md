@@ -245,18 +245,27 @@ offline bot from the chat. Messages from anyone else stay data.
   permission`. The docs say the hook also runs in `-p` sessions: "if no hook
   returns a decision, it denies the tool call", and a hook may answer `allow`
   or `deny`.
-- The hook asks the trusted user in a direct message from the session's bot:
-  what the session wants to run, and a short code for this one request. The
-  bot adds ✅ and ❌ reactions to its own message, so the user answers with
-  one click. Typing `yes 4f2a` or `no 4f2a` works as a fallback.
+- The hook asks the trusted user where the user is talking to the session:
+  in the topic named by `GONIEC_REPLY_TO` (`#channel>topic`), which goniec
+  sets when it starts a headless session, so the user does not switch
+  windows. Without it, the hook asks in a direct message. The question says
+  what the session wants to run and gives a short code for this one
+  request. The bot adds ✅ and ❌ reactions to its own message, so the user
+  answers with one click. Typing `yes 4f2a` or `no 4f2a` in the same place
+  works as a fallback. In a channel the bot must be a subscriber to get the
+  reaction events, so the hook subscribes it first.
+- Built and tested live on 2026-10-30 (`goniec hook permission`): ✅ gave
+  allow, ❌ gave deny, a typed `yes <code>` gave allow, no answer gave deny
+  at the timeout, and the question in a topic worked the same way. The
+  daemon does not deliver a typed answer to the agent.
 - goniec registers for `reaction` events as well as messages. It approves
   only on a reaction added by the trusted user's ID, on exactly that message
   ID, with the expected `emoji_code` (not `emoji_name`, which can differ). A
   typed answer counts only from the trusted user's ID and with the code. So
   an old answer cannot approve a new request, and no agent can approve
   anything: Zulip takes the reacting `user_id` from the authenticated
-  account, and no other bot can see the question, because it is a direct
-  message.
+  account. In a channel other bots see the question and may even react, but
+  only the trusted user's reaction on that exact message counts.
 - Rejected (source research at Zulip 12.3, 2026-10-25): zform buttons
   (`widget_content`, undocumented). A click there only sends a text message
   as the user, which a user with `can_forge_sender` could fake. A `/poll`
@@ -349,9 +358,12 @@ So goniec uses two kinds of key:
 5. The `asyncRewake` test in a throwaway Claude Code session (see *Risks*).
 6. The Claude Code hooks, then the tmux nudge for the other harnesses.
 7. The MCP server, built on the CLI library.
-8. Headless sessions (see *Headless sessions*): the trusted user, the
-   responder for offline bound bots, the `@claude` dispatcher, and the
-   permission hook with approvals through Zulip.
+8. Headless sessions (see *Headless sessions*), in this order:
+   1. ~~The permission hook with approvals through Zulip.~~ Done.
+   2. The trusted user's messages as instructions in headless sessions.
+   3. The responder for offline bound bots: start, batch, end, and set
+      `GONIEC_REPLY_TO`.
+   4. The `@claude` dispatcher.
 
 ## Conventions
 
