@@ -561,8 +561,9 @@ async fn spawn(
             "--verbose",
             "--allowedTools",
             &format!(
-                "Bash(goniec send *),Bash(goniec read *),Read(/{}/**)",
-                uploads::dir()?.display()
+                "Bash(goniec send *),Bash(goniec read *),Read(/{}/**),Edit(/{}/**)",
+                uploads::dir()?.display(),
+                uploads::outgoing_dir()?.display()
             ),
             which,
             session_id,

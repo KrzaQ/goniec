@@ -30,6 +30,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// did not change.
 const RECHECK: Duration = Duration::from_secs(60);
 
+/// How often the daemon removes old saved and outgoing files.
+const PRUNE: Duration = Duration::from_secs(3600);
+
 /// Flags that mean a message mentions the bot.
 const MENTION_FLAGS: &[&str] = &[
     "mentioned",
@@ -72,6 +75,8 @@ pub async fn run() -> Result<()> {
     let mut running: HashMap<String, Running> = HashMap::new();
     let mut seen_mtime: Option<SystemTime> = None;
     let mut last_reload = Instant::now();
+    // The first prune runs a minute after the start.
+    let mut next_prune = Instant::now() + RECHECK;
     let mut keys: Option<Keys> = None;
     let mut responder = Responder::default();
     let (orders, mut received) = unbounded_channel::<Order>();
@@ -95,6 +100,14 @@ pub async fn run() -> Result<()> {
                 responder.command(keys, order).await;
             }
             responder.tick(keys, &bound_bots(keys)).await;
+        }
+        if Instant::now() >= next_prune {
+            next_prune = Instant::now() + PRUNE;
+            match uploads::prune(uploads::KEEP) {
+                Ok(0) => {}
+                Ok(n) => eprintln!("goniec daemon: removed {n} old saved or outgoing file(s)"),
+                Err(e) => eprintln!("goniec daemon: cannot remove old files: {e:#}"),
+            }
         }
         tokio::time::sleep(TICK).await;
     }

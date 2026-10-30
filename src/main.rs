@@ -25,7 +25,7 @@ enum Command {
         /// The message text; `-` or nothing reads it from stdin
         text: Option<String>,
         /// Upload a file and link it in the message (repeatable). Only files
-        /// under the session directory or the temp directory
+        /// under the session directory or ~/.local/state/goniec/outgoing
         #[arg(long, value_name = "FILE")]
         attach: Vec<PathBuf>,
     },

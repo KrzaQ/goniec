@@ -7,13 +7,17 @@
 //! each image in its prompt, so the model sees it at once.
 //!
 //! The other way, `goniec send --attach` uploads files and links them in the
-//! message. It takes only files under the session directory or the system
-//! temp directory: `Bash(goniec send *)` is allowed without asking, so
+//! message. It takes only files under the session directory or goniec's own
+//! `<state>/outgoing/`: `Bash(goniec send *)` is allowed without asking, so
 //! without that limit an agent that a chat message misled could post any
-//! file the user can read, keys included.
+//! file the user can read, keys included. Not the temp directory: it holds
+//! every Claude session's scratchpad and task output.
+//!
+//! The daemon removes saved and outgoing files after `KEEP`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
@@ -32,6 +36,51 @@ const MAX_INLINE_BYTES: u64 = 3_750_000;
 /// Where uploads are saved.
 pub fn dir() -> Result<PathBuf> {
     Ok(inbox::state_dir()?.join("uploads"))
+}
+
+/// Where an agent puts a file to attach that is not in its session
+/// directory.
+pub fn outgoing_dir() -> Result<PathBuf> {
+    Ok(inbox::state_dir()?.join("outgoing"))
+}
+
+/// Saved and outgoing files older than this are removed.
+pub const KEEP: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// Remove the entries of the uploads and outgoing directories that were
+/// last changed more than `keep` ago. Returns how many it removed.
+pub fn prune(keep: Duration) -> Result<usize> {
+    Ok(prune_in(&[dir()?, outgoing_dir()?], keep))
+}
+
+fn prune_in(dirs: &[PathBuf], keep: Duration) -> usize {
+    let mut removed = 0;
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > keep);
+            if !old {
+                continue;
+            }
+            let path = entry.path();
+            let result = if path.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+            if result.is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
 }
 
 /// The upload paths a message links, in order, each once.
@@ -208,6 +257,20 @@ mod tests {
             assert!(check_attachment(&link, &roots).is_err());
         }
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn prune_removes_only_old_entries() {
+        let state = std::env::temp_dir().join(format!("goniec-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        let dirs = [state.join("uploads"), state.join("outgoing")];
+        fs::create_dir_all(dirs[0].join("97")).unwrap();
+        fs::create_dir_all(&dirs[1]).unwrap();
+        fs::write(dirs[1].join("chart.png"), b"png").unwrap();
+        assert_eq!(prune_in(&dirs, KEEP), 0);
+        assert_eq!(prune_in(&dirs, Duration::ZERO), 2);
+        assert!(!dirs[0].join("97").exists());
+        fs::remove_dir_all(&state).unwrap();
     }
 
     #[test]

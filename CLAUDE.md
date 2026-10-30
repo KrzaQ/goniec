@@ -122,13 +122,17 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
   JPEG, GIF, WebP, at most 3.75 MB, the API's 5 MB of base64) as an image
   block, so the model sees it at once (tested 2026-10-30), and its
   allowlist includes reading the uploads directory. `goniec read <thread>`
-  saves the files of the messages it prints.
+  saves the files of the messages it prints. The daemon removes saved and
+  outgoing files after 30 days.
 - **`goniec send --attach <file>`** uploads files and links them. It takes
-  only files under the session directory or the temp directory, after
-  following links. `Bash(goniec send *)` runs without asking, so without
-  this limit a chat message could talk an agent into posting any file the
-  user can read, keys included. A file from elsewhere has to be copied
-  there first, and that copy goes through the normal permission check.
+  only files under the session directory or goniec's own
+  `<state>/outgoing/`, after following links. `Bash(goniec send *)` runs
+  without asking, so without this limit a chat message could talk an agent
+  into posting any file the user can read, keys included. Not `/tmp`: it
+  holds every Claude session's scratchpad and task output (the dotfiles
+  session's review, 2026-10-30). A file from elsewhere has to be copied
+  there first, and that copy goes through the normal permission check. A
+  headless session may write into `outgoing/` without asking.
 - **Commands in a notice run exactly as shown.** The user's allow rules are
   `Bash(goniec send *)` and `Bash(goniec read *)`. A pipe or a redirection
   after them (`goniec send … 2>&1 | tail`) no longer matches, and auto mode

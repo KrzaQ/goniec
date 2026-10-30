@@ -94,7 +94,9 @@ pub async fn send(
     if text.trim().is_empty() && attach.is_empty() {
         bail!("the message is empty");
     }
-    let roots = [session_dir.to_owned(), std::env::temp_dir()];
+    let outgoing = uploads::outgoing_dir()?;
+    std::fs::create_dir_all(&outgoing)?;
+    let roots = [session_dir.to_owned(), outgoing];
     let files = attach
         .iter()
         .map(|f| uploads::check_attachment(f, &roots))
