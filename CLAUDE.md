@@ -439,6 +439,14 @@ offline bot from the chat. Messages from anyone else stay data.
   minutes ago (the question waits 5), is character for character the
   question goniec posts for exactly this call, and carries the trusted
   user's ✅ without ❌ (or the user replied `yes <code>` there).
+- **The model is told what "may retry" means.** Claude Code tells the
+  model only that it "may retry" and drops a `PermissionDenied` hook's
+  `additionalContext` (measured on 2026-10-30). In the first live test the
+  user clicked ✅ and haiku read the value another way instead of
+  retrying. goniec therefore appends one note to the headless session's
+  system prompt: after a denial, that message means the user approved
+  exactly that call, so run it again unchanged. With it, haiku retried in
+  3 runs of 3. The prompt itself stays the user's text.
 - **A question shows the whole call:** the full input, a Write's content
   and an Edit's strings included, without the Bash `description`, which
   the model writes freely. A call too long to show in full (8,000

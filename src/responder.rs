@@ -61,6 +61,17 @@ fn limit(keys: &Keys, nick: &str) -> usize {
 /// before starting that conversation again.
 const RETRY_GAP: Duration = Duration::from_secs(60);
 
+/// Added to a headless session's system prompt. After the user approves a
+/// blocked call, Claude Code tells the model only that it "may retry", and
+/// drops a `PermissionDenied` hook's `additionalContext`. Without this
+/// note haiku read the value another way instead of retrying (measured on
+/// 2026-10-30); with it, it retried in 3 runs of 3. The user's message stays
+/// the prompt, verbatim.
+const RETRY_NOTE: &str = "This session runs headless; the user approves tool calls in a chat. \
+    When the auto-mode classifier denies a tool call and Claude Code then says you may retry \
+    it, the user has approved exactly that call in the chat: run the same call again, \
+    unchanged, before you try anything else. Without that message, the denial stands.";
+
 /// The permission hook's timeout. The hook itself gives up after 14 minutes.
 const PERMISSION_TIMEOUT: u64 = 15 * 60;
 
@@ -636,6 +647,8 @@ async fn spawn(
             // to be asked only about calls the classifier will not allow.
             "--permission-mode",
             "auto",
+            "--append-system-prompt",
+            RETRY_NOTE,
             "--allowedTools",
             "Bash(goniec send *),Bash(goniec read *)",
             which,
