@@ -196,10 +196,6 @@ checked 2026-10-24 for version 2.1.310). Test them before relying on them.
 ## Threads and headless sessions
 
 Designed 2026-10-25, reshaped 2026-10-30 with the user. This is Plan step 8.
-The responder built on 2026-10-30 (`responder.rs`) follows the older shape:
-one headless session per bot, "offline" judged from Claude Code's registry
-after a grace period. It must be reworked to the shape below.
-
 **Threads have owners.** A thread is one (bot, topic) pair, or one bot's
 direct-message conversation with one person. Each thread has an owner: one
 Claude Code conversation, named by its session UUID. The daemon records the
@@ -416,10 +412,16 @@ So goniec uses two kinds of key:
       (`SessionEnd`) removes it, and dead processes are dropped. `goniec
       sessions` lists them; `goniec who` shows local bots as online or
       offline.
-   4. Threads with owners: per-thread routing and inboxes, and rework the
-      responder (`responder.rs`, built 2026-10-30 in the older per-bot
-      shape) to resume the owner conversation. `responder = ["nick", …]` or
-      `["*"]` in `goniec.toml` turns it on per bot.
+   4. ~~Threads with owners.~~ Built 2026-10-30, not yet tested live
+      (`threads.rs`, `responder.rs`): the consumers take only their own or
+      ownerless threads and claim them; the responder resumes an owner that
+      is live nowhere, starts a new conversation (`--session-id`) for an
+      ownerless thread when no interactive session of the bot is online,
+      at most 3 per bot, and ends a process after 15 minutes of quiet or
+      when the user takes the conversation over. `responder = ["nick", …]`
+      or `["*"]` in `goniec.toml` turns it on per bot. An interactive
+      session counts as online only once it has registered, which happens
+      at its next turn.
    5. The `@claude` dispatcher.
 
 ## Conventions
