@@ -88,6 +88,9 @@ async fn run(cli: Cli) -> Result<()> {
             let keys = Keys::load()?;
             let id = send::send(&keys, &binding::session_dir()?, &to, text.trim_end()).await?;
             println!("sent message {id}");
+            if let Some(note) = goniec::headless::own_thread_note(&to) {
+                println!("{note}");
+            }
             Ok(())
         }
         Command::Read => {

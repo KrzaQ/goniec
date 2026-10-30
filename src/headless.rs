@@ -14,6 +14,30 @@ pub fn active() -> bool {
     std::env::var_os("GONIEC_HEADLESS").is_some_and(|v| v == "1")
 }
 
+/// The thread of the current turn of a headless session: the responder
+/// writes it to the file named by `GONIEC_REPLY_TO_FILE` before each turn.
+pub fn current_thread() -> Option<String> {
+    let path = std::env::var_os("GONIEC_REPLY_TO_FILE")?;
+    let text = std::fs::read_to_string(path).ok()?;
+    Some(text.trim().to_owned()).filter(|t| !t.is_empty())
+}
+
+/// What `goniec send` adds to its output when a headless session sends to
+/// its own turn's thread: the answer goes there anyway, as the turn's
+/// result, so the model learns that it need not send it.
+pub fn own_thread_note(to: &str) -> Option<&'static str> {
+    if !active() {
+        return None;
+    }
+    let target = crate::send::parse_target(to).ok()?;
+    let current = crate::send::parse_target(&current_thread()?).ok()?;
+    (target == current).then_some(
+        "[goniec] Sent. In this conversation your final answer is posted to this thread \
+         automatically, so you do not need goniec send to answer here. Use goniec send \
+         for other threads or people.",
+    )
+}
+
 /// The message is the trusted user's instruction: its sender is the trusted
 /// user, and Zulip marks the sender as human. The daemon records an unknown
 /// sender as a bot, so an unknown sender never counts.
@@ -85,6 +109,28 @@ mod tests {
         let text = prompt(&[record(41, 8, false)], 2);
         assert!(text.starts_with("please check the logs\n\n[goniec] 2 messages from others wait"));
         assert!(prompt(&[], 1).starts_with("[goniec] 1 message from someone else waits"));
+    }
+
+    #[test]
+    fn note_only_for_the_own_thread_in_a_headless_session() {
+        let file = std::env::temp_dir().join(format!("goniec-reply-{}", std::process::id()));
+        std::fs::write(&file, "#ops>deploy\n").unwrap();
+        // SAFETY: only this test sets these variables.
+        unsafe {
+            std::env::set_var("GONIEC_REPLY_TO_FILE", &file);
+            std::env::remove_var("GONIEC_HEADLESS");
+        }
+        assert_eq!(own_thread_note("#ops>deploy"), None);
+        unsafe { std::env::set_var("GONIEC_HEADLESS", "1") };
+        assert!(own_thread_note("#ops>deploy").is_some());
+        assert!(own_thread_note("#ops> deploy").is_some());
+        assert_eq!(own_thread_note("#ops>other"), None);
+        assert_eq!(own_thread_note("@phoenix"), None);
+        unsafe {
+            std::env::remove_var("GONIEC_HEADLESS");
+            std::env::remove_var("GONIEC_REPLY_TO_FILE");
+        }
+        std::fs::remove_file(&file).unwrap();
     }
 
     #[test]

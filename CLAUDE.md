@@ -272,6 +272,12 @@ headless process for it ends after its turn (tested live with `@kiekert`).
   posts the result text to the turn's thread, as the bot, split where it is
   longer than Zulip allows. A failed turn posts a short error note; an empty
   result posts nothing. The session does not need `goniec send` to answer.
+  It may still use it, and nothing is suppressed: the user prefers a double
+  post to a lost one. When a headless session sends to its own turn's
+  thread, `goniec send` adds a line to its output saying that the final
+  answer goes there automatically, so the model learns it at that moment.
+  This happens mostly in a conversation that ran interactively before, where
+  `goniec send` was the right way to answer.
 - **`@claude`** is a bot like any other: every mention starts a new thread,
   in a fixed directory, and the threads work as above.
 
