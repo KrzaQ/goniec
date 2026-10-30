@@ -230,6 +230,37 @@ impl Client {
         Ok(messages.messages)
     }
 
+    /// One message, with its reactions.
+    pub async fn message(&self, id: u64) -> Result<Message> {
+        let request = self
+            .request(reqwest::Method::GET, &format!("/messages/{id}"))
+            .query(&[("apply_markdown", "false")]);
+        let one: OneMessage = call(request).await?;
+        Ok(one.message)
+    }
+
+    /// Up to `count` messages that match `narrow` and come after `anchor`,
+    /// oldest first.
+    pub async fn after(&self, narrow: &Value, anchor: u64, count: u32) -> Result<Vec<Message>> {
+        let anchor = anchor.to_string();
+        let count = count.to_string();
+        let narrow = narrow.to_string();
+        let query = [
+            ("anchor", anchor.as_str()),
+            ("num_before", "0"),
+            ("num_after", count.as_str()),
+            ("include_anchor", "false"),
+            ("apply_markdown", "false"),
+            ("narrow", narrow.as_str()),
+        ];
+        let messages: Messages = call(
+            self.request(reqwest::Method::GET, "/messages")
+                .query(&query),
+        )
+        .await?;
+        Ok(messages.messages)
+    }
+
     /// Upload a file. Returns its path on the server, `/user_uploads/…`,
     /// which a message links as `[name](path)`.
     pub async fn upload(&self, name: &str, bytes: Vec<u8>) -> Result<String> {
@@ -457,4 +488,20 @@ pub struct Message {
     /// event instead.
     #[serde(default)]
     pub flags: Vec<String>,
+    /// Set in `GET /messages` answers.
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
+}
+
+/// A reaction on a message. Zulip takes `user_id` from the authenticated
+/// account that reacted.
+#[derive(Deserialize)]
+pub struct Reaction {
+    pub emoji_code: String,
+    pub user_id: u64,
+}
+
+#[derive(Deserialize)]
+struct OneMessage {
+    message: Message,
 }

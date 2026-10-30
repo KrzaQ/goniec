@@ -587,7 +587,12 @@ async fn spawn(
             "timeout": timeout,
         }] }])
     };
+    // A deny rule keeps the session's Edit and Write tools out of the grants,
+    // a second wall: `hook pretool` checks every grant with Zulip anyway.
     let settings = serde_json::json!({
+        "permissions": {
+            "deny": [format!("Edit(/{}/**)", crate::grants::dir()?.display())],
+        },
         "hooks": {
             "PermissionRequest": hook("permission", PERMISSION_TIMEOUT),
             "PermissionDenied": hook("denied", PERMISSION_TIMEOUT),

@@ -7,6 +7,11 @@
 //! the call: a `PreToolUse` allow skips the classifier (measured on
 //! 2026-10-30; without it the retry was blocked again).
 //!
+//! A grant is not proof. The session runs as the same Unix user and could
+//! write this file itself, so a grant only names the Zulip question, and
+//! `hook pretool` checks with Zulip that the trusted user approved that
+//! question (`approve::verify`) before it allows anything.
+//!
 //! One file per conversation: `<state>/grants/<session id>.json`.
 
 use std::fs;
@@ -27,6 +32,17 @@ const LIFETIME: Duration = Duration::from_secs(15 * 60);
 struct Grant {
     call: u64,
     expires: u64,
+    #[serde(flatten)]
+    question: Question,
+}
+
+/// The Zulip question a grant comes from, for `approve::verify`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Question {
+    pub message_id: u64,
+    pub code: String,
+    /// `#channel>topic`, or `direct`.
+    pub place: String,
 }
 
 /// The call a grant is for: the tool and its input, without the
@@ -43,6 +59,11 @@ fn call_key(tool_name: &str, input: &Value) -> u64 {
     hasher.finish()
 }
 
+/// Where grants live.
+pub fn dir() -> Result<PathBuf> {
+    Ok(inbox::state_dir()?.join("grants"))
+}
+
 fn path(session_id: &str) -> Result<PathBuf> {
     if session_id.is_empty()
         || !session_id
@@ -51,9 +72,7 @@ fn path(session_id: &str) -> Result<PathBuf> {
     {
         bail!("bad session ID {session_id:?}");
     }
-    Ok(inbox::state_dir()?
-        .join("grants")
-        .join(format!("{session_id}.json")))
+    Ok(dir()?.join(format!("{session_id}.json")))
 }
 
 fn now() -> u64 {
@@ -84,39 +103,44 @@ fn store(path: &PathBuf, grants: &[Grant]) -> Result<()> {
     Ok(())
 }
 
-/// Record that the user approved this call once.
-pub fn grant(session_id: &str, tool_name: &str, input: &Value) -> Result<()> {
-    grant_at(&path(session_id)?, tool_name, input)
+/// Record that the user approved this call once, in `question`.
+pub fn grant(session_id: &str, tool_name: &str, input: &Value, question: Question) -> Result<()> {
+    grant_at(&path(session_id)?, tool_name, input, question)
 }
 
-fn grant_at(path: &PathBuf, tool_name: &str, input: &Value) -> Result<()> {
+fn grant_at(path: &PathBuf, tool_name: &str, input: &Value, question: Question) -> Result<()> {
     let mut grants = load(path);
     grants.push(Grant {
         call: call_key(tool_name, input),
         expires: now() + LIFETIME.as_secs(),
+        question,
     });
     store(path, &grants)
 }
 
-/// Use up a grant for this call, if there is one.
-pub fn take(session_id: &str, tool_name: &str, input: &Value) -> Result<bool> {
+/// How long a question counts as an approval.
+pub const MAX_AGE: Duration = LIFETIME;
+
+/// Use up a grant for this call, if there is one, and return its question,
+/// which the caller must still check with Zulip.
+pub fn take(session_id: &str, tool_name: &str, input: &Value) -> Result<Option<Question>> {
     take_at(&path(session_id)?, tool_name, input)
 }
 
-fn take_at(path: &PathBuf, tool_name: &str, input: &Value) -> Result<bool> {
+fn take_at(path: &PathBuf, tool_name: &str, input: &Value) -> Result<Option<Question>> {
     // Most calls find no file and cost nothing more.
     if !path.exists() {
-        return Ok(false);
+        return Ok(None);
     }
     let mut grants = load(path);
     let call = call_key(tool_name, input);
     let Some(at) = grants.iter().position(|g| g.call == call) else {
         store(path, &grants)?;
-        return Ok(false);
+        return Ok(None);
     };
-    grants.remove(at);
+    let grant = grants.remove(at);
     store(path, &grants)?;
-    Ok(true)
+    Ok(Some(grant.question))
 }
 
 #[cfg(test)]
@@ -141,12 +165,20 @@ mod tests {
         let state = std::env::temp_dir().join(format!("goniec-grants-once-{}", std::process::id()));
         let path = state.join("s.json");
         let call = json!({ "command": "uname -r", "description": "kernel" });
-        assert!(!take_at(&path, "Bash", &call).unwrap());
-        grant_at(&path, "Bash", &call).unwrap();
-        assert!(!take_at(&path, "Bash", &json!({ "command": "uname -a" })).unwrap());
+        let question = Question {
+            message_id: 177,
+            code: "ae65".into(),
+            place: "#ops>goniec test".into(),
+        };
+        assert_eq!(take_at(&path, "Bash", &call).unwrap(), None);
+        grant_at(&path, "Bash", &call, question.clone()).unwrap();
+        assert_eq!(
+            take_at(&path, "Bash", &json!({ "command": "uname -a" })).unwrap(),
+            None
+        );
         let retry = json!({ "command": "uname -r", "description": "again" });
-        assert!(take_at(&path, "Bash", &retry).unwrap());
-        assert!(!take_at(&path, "Bash", &retry).unwrap(), "used up");
+        assert_eq!(take_at(&path, "Bash", &retry).unwrap(), Some(question));
+        assert_eq!(take_at(&path, "Bash", &retry).unwrap(), None, "used up");
         assert!(!path.exists());
         let _ = fs::remove_dir_all(&state);
     }
@@ -156,11 +188,17 @@ mod tests {
         let state = std::env::temp_dir().join(format!("goniec-grants-{}", std::process::id()));
         let path = state.join("s.json");
         let call = call_key("Bash", &json!({ "command": "uname -r" }));
+        let question = || Question {
+            message_id: 1,
+            code: "0000".into(),
+            place: "direct".into(),
+        };
         store(
             &path,
             &[Grant {
                 call,
                 expires: now() + 60,
+                question: question(),
             }],
         )
         .unwrap();
@@ -170,6 +208,7 @@ mod tests {
             &[Grant {
                 call,
                 expires: now() - 1,
+                question: question(),
             }],
         )
         .unwrap();

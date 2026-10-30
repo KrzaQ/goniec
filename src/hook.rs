@@ -178,10 +178,13 @@ pub fn end() -> i32 {
 pub fn permission() -> i32 {
     let input = read_input();
     let decision = match ask_trusted_user(&input, None) {
-        Ok(Some(approve::Answer::Allow)) => serde_json::json!({ "behavior": "allow" }),
-        Ok(Some(approve::Answer::Deny(why))) => {
-            serde_json::json!({ "behavior": "deny", "message": format!("Not approved: {why}.") })
-        }
+        Ok(Some((outcome, _))) => match outcome.answer {
+            approve::Answer::Allow => serde_json::json!({ "behavior": "allow" }),
+            approve::Answer::Deny(why) => serde_json::json!({
+                "behavior": "deny",
+                "message": format!("Not approved: {why}."),
+            }),
+        },
         Ok(None) => return 0,
         Err(e) => {
             log("permission", &e);
@@ -197,14 +200,25 @@ pub fn permission() -> i32 {
 
 /// For `PermissionDenied`, in a headless session that runs in auto mode:
 /// ask the trusted user about a call the classifier blocked. On a yes,
-/// record a one-time grant and tell the model to retry; `pretool` then
-/// allows the retry. On a no, or no answer, the block stands.
+/// record a grant that names the question and tell the model to retry;
+/// `pretool` checks the question with Zulip and allows the retry. On a no,
+/// or no answer, the block stands.
 pub fn denied() -> i32 {
     let input = read_input();
     let reason = (!input.reason.is_empty()).then_some(input.reason.as_str());
     match ask_trusted_user(&input, Some(reason.unwrap_or("no reason given"))) {
-        Ok(Some(approve::Answer::Allow)) => {
-            if let Err(e) = grants::grant(&input.session_id, &input.tool_name, &input.tool_input) {
+        Ok(Some((outcome, place))) if outcome.answer == approve::Answer::Allow => {
+            let question = grants::Question {
+                message_id: outcome.message_id,
+                code: outcome.code,
+                place: place.text(),
+            };
+            if let Err(e) = grants::grant(
+                &input.session_id,
+                &input.tool_name,
+                &input.tool_input,
+                question,
+            ) {
                 log("denied", &e);
                 return 0;
             }
@@ -220,11 +234,20 @@ pub fn denied() -> i32 {
 }
 
 /// For `PreToolUse` in a headless session: allow a call the trusted user
-/// approved after the classifier blocked it, once. Every other call passes
-/// untouched.
+/// approved after the classifier blocked it, once, and only after Zulip
+/// confirms the approval: the grant file alone proves nothing, because the
+/// session could write it. Every other call passes untouched.
 pub fn pretool() -> i32 {
     let input = read_input();
-    match grants::take(&input.session_id, &input.tool_name, &input.tool_input) {
+    let question = match grants::take(&input.session_id, &input.tool_name, &input.tool_input) {
+        Ok(Some(question)) => question,
+        Ok(None) => return 0,
+        Err(e) => {
+            log("pretool", &e);
+            return 0;
+        }
+    };
+    match approved_in_zulip(&input, &question) {
         Ok(true) => {
             let output = serde_json::json!({
                 "hookSpecificOutput": {
@@ -235,13 +258,20 @@ pub fn pretool() -> i32 {
             });
             println!("{output}");
         }
-        Ok(false) => {}
+        Ok(false) => log(
+            "pretool",
+            &anyhow::anyhow!(
+                "Zulip does not confirm the approval in message {}; the classifier decides",
+                question.message_id
+            ),
+        ),
         Err(e) => log("pretool", &e),
     }
     0
 }
 
-fn ask_trusted_user(input: &Input, blocked: Option<&str>) -> Result<Option<approve::Answer>> {
+/// The session's bot and the trusted user, for asking and checking.
+fn approver() -> Result<Option<(Keys, String, u64)>> {
     let dir = binding::session_dir()?;
     let Some(binding) = binding::find(&dir)? else {
         return Ok(None);
@@ -257,20 +287,59 @@ fn ask_trusted_user(input: &Input, blocked: Option<&str>) -> Result<Option<appro
     let Some(trusted) = keys.trusted_user_id else {
         bail!("no trusted_user_id in the key file, so nobody can approve");
     };
+    Ok(Some((keys, binding.nick, trusted)))
+}
+
+fn ask_trusted_user(
+    input: &Input,
+    blocked: Option<&str>,
+) -> Result<Option<(approve::Outcome, approve::Place)>> {
+    let Some((keys, nick, trusted)) = approver()? else {
+        return Ok(None);
+    };
+    let bot = keys.bot(&nick)?;
+    let place = approve::Place::from_env();
     let runtime = tokio::runtime::Runtime::new()?;
-    let answer = runtime.block_on(approve::ask(
+    let outcome = runtime.block_on(approve::ask(
         &keys.site,
-        &binding.nick,
+        &nick,
         bot,
         trusted,
-        &approve::Place::from_env(),
+        &place,
         &approve::Request {
             tool_name: &input.tool_name,
             input: &input.tool_input,
             blocked,
         },
     ))?;
-    Ok(Some(answer))
+    Ok(Some((outcome, place)))
+}
+
+fn approved_in_zulip(input: &Input, question: &grants::Question) -> Result<bool> {
+    let Some((keys, nick, trusted)) = approver()? else {
+        return Ok(false);
+    };
+    let bot = keys.bot(&nick)?;
+    let client = crate::zulip::Client::new(&keys.site, &bot.email, &bot.api_key)?;
+    let place = approve::Place::parse(&question.place);
+    let request = approve::Request {
+        tool_name: &input.tool_name,
+        input: &input.tool_input,
+        blocked: None,
+    };
+    let check = approve::Check {
+        bot_user_id: bot.user_id,
+        trusted_user_id: trusted,
+        place: &place,
+        message_id: question.message_id,
+        code: &question.code,
+        request: &request,
+        max_age: grants::MAX_AGE,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(approve::verify(&client, &check))
 }
 
 /// This session's nickname and inbox, if its directory is bound to a bot

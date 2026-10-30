@@ -56,6 +56,39 @@ impl Place {
     }
 }
 
+impl Place {
+    /// The place as a reply target: `#channel>topic`, or `direct`.
+    pub fn text(&self) -> String {
+        match self {
+            Place::Topic { channel, topic } => format!("#{channel}>{topic}"),
+            Place::Direct => "direct".to_owned(),
+        }
+    }
+
+    /// The inverse of `text`.
+    pub fn parse(text: &str) -> Self {
+        match crate::send::parse_target(text) {
+            Ok(crate::send::Target::Channel { channel, topic }) => Place::Topic { channel, topic },
+            _ => Place::Direct,
+        }
+    }
+
+    /// The narrow for the place, where the trusted user answers.
+    fn narrow(&self, trusted_user_id: u64) -> Value {
+        match self {
+            Place::Topic { channel, topic } => crate::history::narrow(channel, topic),
+            Place::Direct => crate::history::narrow_direct(trusted_user_id),
+        }
+    }
+}
+
+/// The answer, and the question it answers.
+pub struct Outcome {
+    pub answer: Answer,
+    pub message_id: u64,
+    pub code: String,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Answer {
     Allow,
@@ -154,7 +187,7 @@ pub async fn ask(
     trusted_user_id: u64,
     place: &Place,
     request: &Request<'_>,
-) -> Result<Answer> {
+) -> Result<Outcome> {
     let Request {
         tool_name,
         input,
@@ -205,7 +238,74 @@ pub async fn ask(
         Answer::Deny(why) => format!("❌ Denied (request {code}): {why}."),
     };
     let _ = post(&client, place, trusted_user_id, &note).await;
-    Ok(answer)
+    Ok(Outcome {
+        answer,
+        message_id,
+        code,
+    })
+}
+
+/// A question to check with Zulip.
+pub struct Check<'a> {
+    pub bot_user_id: u64,
+    pub trusted_user_id: u64,
+    pub place: &'a Place,
+    pub message_id: u64,
+    pub code: &'a str,
+    pub request: &'a Request<'a>,
+    /// An older question does not count.
+    pub max_age: Duration,
+}
+
+/// Whether the trusted user approved this call in Zulip: the question was
+/// sent by this bot, in the place, not longer ago than `max_age`, and shows
+/// exactly this call and its code; and the trusted user reacted ✅ to it
+/// without ❌, or replied `yes <code>` there. Zulip authenticates who
+/// reacted and who wrote, so a session can fake none of this, not even with
+/// its bot's key: a question it posts itself is not approved until the user
+/// approves what the question shows.
+pub async fn verify(client: &Client, check: &Check<'_>) -> Result<bool> {
+    let question = client.message(check.message_id).await?;
+    let age = chrono::Utc::now().timestamp() - question.timestamp;
+    // The model may reword a Bash call's `description` on the retry; the
+    // call itself must be the same.
+    let mut call = check.request.input.clone();
+    if let Some(map) = call.as_object_mut() {
+        map.remove("description");
+    }
+    let shows_the_call = question
+        .content
+        .contains(&describe(check.request.tool_name, &call))
+        && question.content.contains(&format!("`yes {}`", check.code));
+    if question.sender_id != check.bot_user_id
+        || !in_place(&question, check.place)
+        || !shows_the_call
+        || age < 0
+        || age as u64 > check.max_age.as_secs()
+    {
+        return Ok(false);
+    }
+    let by_user = |code: &str| {
+        question
+            .reactions
+            .iter()
+            .any(|r| r.user_id == check.trusted_user_id && r.emoji_code == code)
+    };
+    if by_user(DENY_CODE) {
+        return Ok(false);
+    }
+    if by_user(ALLOW_CODE) {
+        return Ok(true);
+    }
+    let narrow = check.place.narrow(check.trusted_user_id);
+    for m in client.after(&narrow, check.message_id, 100).await? {
+        if m.sender_id == check.trusted_user_id
+            && let Some(yes) = parse_reply(&m.content, check.code)
+        {
+            return Ok(yes);
+        }
+    }
+    Ok(false)
 }
 
 async fn post(client: &Client, place: &Place, trusted_user_id: u64, text: &str) -> Result<u64> {
