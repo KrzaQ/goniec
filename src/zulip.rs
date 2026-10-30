@@ -230,6 +230,40 @@ impl Client {
         Ok(messages.messages)
     }
 
+    /// Upload a file. Returns its path on the server, `/user_uploads/…`,
+    /// which a message links as `[name](path)`.
+    pub async fn upload(&self, name: &str, bytes: Vec<u8>) -> Result<String> {
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(name.to_owned());
+        let form = reqwest::multipart::Form::new().part("file", part);
+        let request = self
+            .request(reqwest::Method::POST, "/user_uploads")
+            .multipart(form);
+        let uploaded: Uploaded = call(request).await?;
+        Ok(uploaded.url)
+    }
+
+    /// Download an uploaded file by its path, `/user_uploads/…`. Zulip
+    /// answers with a temporary URL that needs no authentication. Fails
+    /// for a file larger than `max_bytes`.
+    pub async fn download(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        let temporary: Uploaded = call(self.request(reqwest::Method::GET, path)).await?;
+        let mut response = self
+            .http
+            .get(format!("{}{}", self.site, temporary.url))
+            .send()
+            .await
+            .context("cannot reach Zulip")?
+            .error_for_status()?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() as u64 > max_bytes {
+                anyhow::bail!("larger than {} MB", max_bytes / 1_000_000);
+            }
+        }
+        Ok(bytes)
+    }
+
     /// Mark messages as read for this client's user.
     pub async fn mark_read(&self, ids: &[u64]) -> Result<()> {
         let form = [
@@ -281,6 +315,11 @@ pub struct User {
 #[derive(Deserialize)]
 struct Users {
     members: Vec<User>,
+}
+
+#[derive(Deserialize)]
+struct Uploaded {
+    url: String,
 }
 
 #[derive(Deserialize)]

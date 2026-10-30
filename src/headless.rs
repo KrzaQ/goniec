@@ -61,6 +61,11 @@ pub fn prompt(instructions: &[Record], others_waiting: usize) -> String {
     let mut parts: Vec<String> = Vec::new();
     for r in instructions {
         parts.push(r.content.clone());
+        if !r.files.is_empty() {
+            let mut files = String::from("[goniec] The message's files, saved on this host:\n");
+            crate::inbox::write_files(&mut files, r);
+            parts.push(files.trim_end().to_owned());
+        }
         if !r.earlier.is_empty() {
             parts.push(crate::history::format_earlier(r).trim_end().to_owned());
         }
@@ -90,6 +95,18 @@ pub fn thread_line(r: &Record) -> String {
     }
 }
 
+/// The images of a turn's messages, and of the earlier messages attached
+/// to them, as content blocks, so the model sees them without reading the
+/// files.
+pub fn images(instructions: &[Record]) -> Vec<serde_json::Value> {
+    instructions
+        .iter()
+        .flat_map(|r| r.earlier.iter().chain(std::iter::once(r)))
+        .flat_map(|r| &r.files)
+        .filter_map(|f| crate::uploads::image_block(f))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +124,7 @@ mod tests {
             content: "please check the logs".into(),
             earlier: Vec::new(),
             note: None,
+            files: Vec::new(),
         }
     }
 

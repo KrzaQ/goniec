@@ -18,4 +18,5 @@ pub mod rosa;
 pub mod send;
 pub mod sessions;
 pub mod threads;
+pub mod uploads;
 pub mod zulip;

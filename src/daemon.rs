@@ -17,6 +17,7 @@ use crate::history;
 use crate::inbox::{self, Inbox};
 use crate::keys::{self, Bot, Keys};
 use crate::responder::Responder;
+use crate::uploads;
 use crate::zulip::{self, Client, Message};
 
 /// How often the daemon looks for changes in the key file, and for
@@ -360,6 +361,17 @@ impl Listener {
                     format!("cannot fetch the messages before {}: {e:#}", record.id),
                 ),
             }
+        }
+        // Save linked files, so the agent can read them.
+        let mut errors = uploads::fetch(&self.client, &mut record).await;
+        for earlier in &mut record.earlier {
+            errors.extend(uploads::fetch(&self.client, earlier).await);
+        }
+        for e in errors {
+            log(
+                &self.nick,
+                format!("cannot save a file of message {}: {e}", record.id),
+            );
         }
         if self.inbox.put(&record)? {
             log(&self.nick, format!("message {} in the inbox", record.id));

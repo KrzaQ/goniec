@@ -32,6 +32,7 @@ use crate::keys::{Bot, Keys};
 use crate::send::{self, Target};
 use crate::sessions::{self, Entry};
 use crate::threads::{self, Owner, Table};
+use crate::uploads;
 use crate::zulip::Client;
 
 /// Collect messages for this long before a turn, so that a burst of lines
@@ -559,7 +560,10 @@ async fn spawn(
             "stream-json",
             "--verbose",
             "--allowedTools",
-            "Bash(goniec send *),Bash(goniec read *)",
+            &format!(
+                "Bash(goniec send *),Bash(goniec read *),Read(/{}/**)",
+                uploads::dir()?.display()
+            ),
             which,
             session_id,
             "--settings",
@@ -738,9 +742,17 @@ async fn feed(
         prompt = format!("{}\n{prompt}", headless::thread_line(first));
         conv.last_thread = Some(threads::key(first));
     }
+    let images = headless::images(&instructions);
+    let content = if images.is_empty() {
+        serde_json::Value::String(prompt)
+    } else {
+        let mut blocks = vec![serde_json::json!({ "type": "text", "text": prompt })];
+        blocks.extend(images);
+        serde_json::Value::Array(blocks)
+    };
     let line = serde_json::json!({
         "type": "user",
-        "message": { "role": "user", "content": prompt },
+        "message": { "role": "user", "content": content },
     });
     let stdin = conv
         .stdin

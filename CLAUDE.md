@@ -113,6 +113,22 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
   also has a `thread:` line: `goniec read '<thread>'` prints the thread's
   latest messages from Zulip (`-n`, `--before <id>`), read-only. It works
   for `@guest` too.
+- **Files.** A message links an upload as `[name](/user_uploads/…)`. The
+  daemon saves every linked file, of the message and of its attached
+  earlier messages, under `<state>/uploads/<message id>/`, at most 25 MB
+  each. A bot downloads with `GET /user_uploads/…`, which answers with a
+  temporary URL. The notice shows a `file:` line per file; the agent reads
+  it with its Read tool. A headless prompt also carries each image (PNG,
+  JPEG, GIF, WebP, at most 3.75 MB, the API's 5 MB of base64) as an image
+  block, so the model sees it at once (tested 2026-10-30), and its
+  allowlist includes reading the uploads directory. `goniec read <thread>`
+  saves the files of the messages it prints.
+- **`goniec send --attach <file>`** uploads files and links them. It takes
+  only files under the session directory or the temp directory, after
+  following links. `Bash(goniec send *)` runs without asking, so without
+  this limit a chat message could talk an agent into posting any file the
+  user can read, keys included. A file from elsewhere has to be copied
+  there first, and that copy goes through the normal permission check.
 - **Commands in a notice run exactly as shown.** The user's allow rules are
   `Bash(goniec send *)` and `Bash(goniec read *)`. A pipe or a redirection
   after them (`goniec send … 2>&1 | tail`) no longer matches, and auto mode

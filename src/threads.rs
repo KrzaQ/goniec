@@ -114,6 +114,7 @@ mod tests {
             content: "hi".into(),
             earlier: Vec::new(),
             note: None,
+            files: Vec::new(),
         }
     }
 

@@ -12,7 +12,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::inbox::{Record, quote_lines, reply_target, shell_quote, when};
+use crate::inbox::{Record, quote_lines, reply_target, shell_quote, when, write_files};
 use crate::keys::Keys;
 use crate::provision;
 use crate::send::{Target, parse_target, resolve};
@@ -66,6 +66,7 @@ pub fn record(m: Message, is_bot: &HashMap<u64, bool>, mentioned: bool) -> Recor
         content: m.content,
         earlier: Vec::new(),
         note: None,
+        files: Vec::new(),
     }
 }
 
@@ -100,7 +101,12 @@ pub async fn read(
     let users = client.users().await?;
     let is_bot = users.iter().map(|u| (u.user_id, u.is_bot)).collect();
     let narrow = narrow_for(&target, |name| Ok(resolve(&users, name)?.user_id))?;
-    let records = fetch(&client, &narrow, before, count, &is_bot).await?;
+    let mut records = fetch(&client, &narrow, before, count, &is_bot).await?;
+    for record in &mut records {
+        for e in crate::uploads::fetch(&client, record).await {
+            eprintln!("goniec: cannot save a file of message {}: {e}", record.id);
+        }
+    }
     // The canonical form, so `earlier:` names the thread the same way
     // whichever form the caller used.
     let thread = match &target {
@@ -231,6 +237,7 @@ fn write_one(out: &mut String, r: &Record, max_chars: usize) {
     } else {
         quote_lines(out, &r.content);
     }
+    write_files(out, r);
 }
 
 #[cfg(test)]

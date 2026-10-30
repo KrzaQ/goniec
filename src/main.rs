@@ -1,4 +1,5 @@
 use std::io::Read as _;
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
@@ -23,6 +24,10 @@ enum Command {
         to: String,
         /// The message text; `-` or nothing reads it from stdin
         text: Option<String>,
+        /// Upload a file and link it in the message (repeatable). Only files
+        /// under the session directory or the temp directory
+        #[arg(long, value_name = "FILE")]
+        attach: Vec<PathBuf>,
     },
     /// Print the messages in this session's inbox and mark them delivered,
     /// or, with a thread, that thread's latest messages from Zulip
@@ -86,8 +91,11 @@ fn main() -> Result<()> {
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Hook { .. } => unreachable!("handled before clap"),
-        Command::Send { to, text } => {
+        Command::Send { to, text, attach } => {
             let text = match text.as_deref() {
+                // With files, a missing text is an empty one: an agent's
+                // Bash tool has no stdin to wait for.
+                None if !attach.is_empty() => String::new(),
                 None | Some("-") => {
                     let mut text = String::new();
                     std::io::stdin().read_to_string(&mut text)?;
@@ -96,7 +104,14 @@ async fn run(cli: Cli) -> Result<()> {
                 Some(text) => text.to_owned(),
             };
             let keys = Keys::load()?;
-            let id = send::send(&keys, &binding::session_dir()?, &to, text.trim_end()).await?;
+            let id = send::send(
+                &keys,
+                &binding::session_dir()?,
+                &to,
+                text.trim_end(),
+                &attach,
+            )
+            .await?;
             println!("sent message {id}");
             if let Some(note) = goniec::headless::own_thread_note(&to) {
                 println!("{note}");

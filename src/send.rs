@@ -1,11 +1,12 @@
 //! `goniec send`: post as this session's bot.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
 use crate::keys::Keys;
 use crate::provision;
+use crate::uploads;
 use crate::zulip::{Client, User};
 
 #[derive(Debug, PartialEq)]
@@ -82,11 +83,22 @@ pub fn guest_header(host: &str, dir: &Path, home: Option<&Path>) -> String {
 }
 
 /// Post `text` as this session's bot. Returns the message ID.
-pub async fn send(keys: &Keys, session_dir: &Path, to: &str, text: &str) -> Result<u64> {
+pub async fn send(
+    keys: &Keys,
+    session_dir: &Path,
+    to: &str,
+    text: &str,
+    attach: &[PathBuf],
+) -> Result<u64> {
     let target = parse_target(to)?;
-    if text.trim().is_empty() {
+    if text.trim().is_empty() && attach.is_empty() {
         bail!("the message is empty");
     }
+    let roots = [session_dir.to_owned(), std::env::temp_dir()];
+    let files = attach
+        .iter()
+        .map(|f| uploads::check_attachment(f, &roots))
+        .collect::<Result<Vec<_>>>()?;
     let id = provision::identity(keys, session_dir).await?;
     let content = match id.dir {
         Some(_) => text.to_owned(),
@@ -98,6 +110,13 @@ pub async fn send(keys: &Keys, session_dir: &Path, to: &str, text: &str) -> Resu
         }
     };
     let client = Client::new(&keys.site, &id.bot.email, &id.bot.api_key)?;
+    let links = uploads::attach(&client, &files).await?;
+    let content = [content.trim_end().to_owned()]
+        .into_iter()
+        .filter(|c| !c.is_empty())
+        .chain(links)
+        .collect::<Vec<_>>()
+        .join("\n");
     match target {
         Target::Channel { channel, topic } => {
             client.send_to_channel(&channel, &topic, &content).await
