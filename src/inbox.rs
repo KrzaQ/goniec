@@ -128,34 +128,39 @@ impl Inbox {
     /// how many are left. One message is always taken; if it alone is too
     /// long, its content is cut. Returns `None` when nothing is new.
     pub fn take_fitting(&self, nick: &str, max_chars: usize) -> Result<Option<String>> {
-        let ids = self.ids(NEW)?;
+        self.take_fitting_where(nick, max_chars, |_| true)
+    }
+
+    /// `take_fitting` for only the messages that `wanted` accepts. The count
+    /// of messages left also counts only those.
+    pub fn take_fitting_where(
+        &self,
+        nick: &str,
+        max_chars: usize,
+        wanted: impl Fn(&Record) -> bool,
+    ) -> Result<Option<String>> {
+        let candidates: Vec<Record> = self.peek()?.into_iter().filter(|r| wanted(r)).collect();
         let mut chosen: Vec<Record> = Vec::new();
-        for &id in &ids {
-            let path = self.root.join(NEW).join(file_name(id));
-            let record: Record = match fs::read(&path) {
-                Ok(bytes) => serde_json::from_slice(&bytes).context("bad message file")?,
-                Err(e) if e.kind() == ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
-            chosen.push(record);
-            let left = ids.len() - chosen.len();
+        for record in &candidates {
+            chosen.push(record.clone());
+            let left = candidates.len() - chosen.len();
             if format_with_rest(nick, &chosen, left).chars().count() > max_chars {
                 chosen.pop();
                 break;
             }
         }
         if chosen.is_empty() {
-            let Some(&first) = ids.first() else {
+            let Some(first) = candidates.first() else {
                 return Ok(None);
             };
-            let path = self.root.join(NEW).join(file_name(first));
-            let mut record: Record = serde_json::from_slice(&fs::read(&path)?)?;
-            let room = max_chars.saturating_sub(format_with_rest(nick, &[], ids.len()).len() + 400);
+            let mut record = first.clone();
+            let room =
+                max_chars.saturating_sub(format_with_rest(nick, &[], candidates.len()).len() + 400);
             let total = record.content.chars().count();
             record.content = record.content.chars().take(room).collect();
             record.content.push_str(&format!(
                 "\n[goniec: the message is cut here; {} characters are missing]",
-                total - room
+                total.saturating_sub(room)
             ));
             chosen.push(record);
         }
@@ -174,8 +179,24 @@ impl Inbox {
         if taken.is_empty() {
             return Ok(None);
         }
-        let left = self.pending()?;
+        let left = self.peek()?.iter().filter(|r| wanted(r)).count();
         Ok(Some(format_with_rest(nick, &taken, left)))
+    }
+
+    /// The new messages, oldest first, without taking them.
+    pub fn peek(&self) -> Result<Vec<Record>> {
+        let mut records = Vec::new();
+        for id in self.ids(NEW)? {
+            match fs::read(self.root.join(NEW).join(file_name(id))) {
+                Ok(bytes) => {
+                    records.push(serde_json::from_slice(&bytes).context("bad message file")?)
+                }
+                // Another reader took it in the meantime.
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(records)
     }
 
     /// Messages that an agent has taken but Zulip does not know as read yet.
