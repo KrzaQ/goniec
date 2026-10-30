@@ -10,7 +10,8 @@ use tokio::task::JoinHandle;
 
 use crate::approve;
 use crate::binding;
-use crate::inbox::{self, Inbox, Record};
+use crate::history;
+use crate::inbox::{self, Inbox};
 use crate::keys::{self, Bot, Keys};
 use crate::responder::Responder;
 use crate::zulip::{self, Client, Message};
@@ -293,22 +294,29 @@ impl Listener {
         if !self.is_bot.contains_key(&m.sender_id) {
             self.refresh_users().await?;
         }
-        let record = Record {
-            id: m.id,
-            timestamp: m.timestamp,
-            sender_id: m.sender_id,
-            sender_name: m.sender_full_name,
-            // An unknown sender is treated as a bot, so it never counts as the user.
-            sender_is_bot: self.is_bot.get(&m.sender_id).copied().unwrap_or(true),
-            channel: if direct {
-                None
-            } else {
-                m.display_recipient.as_str().map(str::to_owned)
-            },
-            topic: if direct { None } else { Some(m.subject) },
-            mentioned,
-            content: m.content,
-        };
+        let bare = !direct && history::is_bare_mention(&m.content);
+        let mut record = history::record(m, &self.is_bot, mentioned);
+        // A bare mention points at the messages before it, which this bot
+        // never got: attach a few. Without them the agent still gets the
+        // message, and its `thread:` line.
+        if bare && let (Some(channel), Some(topic)) = (&record.channel, &record.topic) {
+            let narrow = history::narrow(channel, topic);
+            match history::fetch(
+                &self.client,
+                &narrow,
+                Some(record.id),
+                history::EARLIER,
+                &self.is_bot,
+            )
+            .await
+            {
+                Ok(earlier) => record.earlier = earlier,
+                Err(e) => log(
+                    &self.nick,
+                    format!("cannot fetch the messages before {}: {e:#}", record.id),
+                ),
+            }
+        }
         if self.inbox.put(&record)? {
             log(&self.nick, format!("message {} in the inbox", record.id));
         }

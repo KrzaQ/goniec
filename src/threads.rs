@@ -104,6 +104,7 @@ mod tests {
             topic: topic.map(str::to_owned),
             mentioned: true,
             content: "hi".into(),
+            earlier: Vec::new(),
         }
     }
 

@@ -200,6 +200,36 @@ impl Client {
         Ok(messages.messages)
     }
 
+    /// The newest `count` messages that match `narrow` (JSON narrow terms)
+    /// and come before `before`, or up to the newest message without it.
+    /// Oldest first.
+    pub async fn history(
+        &self,
+        narrow: &Value,
+        before: Option<u64>,
+        count: u32,
+    ) -> Result<Vec<Message>> {
+        let anchor = before.map_or("newest".to_owned(), |id| id.to_string());
+        let count = count.to_string();
+        let narrow = narrow.to_string();
+        let mut query = vec![
+            ("anchor", anchor.as_str()),
+            ("num_before", count.as_str()),
+            ("num_after", "0"),
+            ("apply_markdown", "false"),
+            ("narrow", narrow.as_str()),
+        ];
+        if before.is_some() {
+            query.push(("include_anchor", "false"));
+        }
+        let messages: Messages = call(
+            self.request(reqwest::Method::GET, "/messages")
+                .query(&query),
+        )
+        .await?;
+        Ok(messages.messages)
+    }
+
     /// Mark messages as read for this client's user.
     pub async fn mark_read(&self, ids: &[u64]) -> Result<()> {
         let form = [

@@ -103,6 +103,21 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
 - **What reaches an agent.** Direct messages to its bot, and channel messages
   that mention it, including `@all`. Other channel traffic does not, because
   every delivery wakes an agent and costs a turn. Its own messages do not.
+- **A thread's earlier messages.** Channel traffic that does not mention a
+  bot never reaches it, so a bare mention (`@**series-pl**` and nothing
+  else) carries no request. The user writes those to point an agent at the
+  messages above (feedback from the series-pl session, 2026-10-30). For a
+  message that holds only mentions, the daemon fetches the thread's 5
+  messages before it and stores them with the message. The notice and the
+  headless prompt show them, quoted, as data. Every message in a notice
+  also has a `thread:` line: `goniec read '<thread>'` prints the thread's
+  latest messages from Zulip (`-n`, `--before <id>`), read-only. It works
+  for `@guest` too.
+- **Commands in a notice run exactly as shown.** The user's allow rules are
+  `Bash(goniec send *)` and `Bash(goniec read *)`. A pipe or a redirection
+  after them (`goniec send … 2>&1 | tail`) no longer matches, and auto mode
+  then denied the send as an external write (series-pl, 2026-10-30). The
+  notice says so.
 - **Zulip's unread flags are the truth.** When the daemon starts, it fetches
   each bot's unread messages into the inbox. It marks a message read in Zulip
   only after an agent has received it. A daemon restart or a host reboot loses
@@ -301,7 +316,7 @@ offline bot from the chat. Messages from anyone else stay data.
 **Permissions.** A headless session has no terminal for permission prompts.
 
 - It starts with a narrow allowlist: read access to its project, and
-  `goniec send` and `goniec read`. It also loads the user's global
+  `goniec send *` and `goniec read *`. It also loads the user's global
   `~/.claude/settings.json`, so the tools allowed there (read-only git
   commands and the like) run without asking in Zulip too.
 - Everything else goes to a `PermissionRequest` hook, `goniec hook
@@ -410,8 +425,10 @@ So goniec uses two kinds of key:
 1. ~~Zulip admin access for goniec.~~ Done: see *Zulip permissions*.
 2. Bots: `admin`, `@guest` and one test nickname. The `#ops` stream.
    `goniec provision` and `goniec bind` do this with the owner key from rosa.
-3. `goniec` CLI: send, read, rooms, who, bind. The identity check. Open:
-   `read` as `@guest`, which needs state per guest session.
+3. `goniec` CLI: send, read, rooms, who, bind. The identity check.
+   `read <thread>` prints a thread's history, also as `@guest`. Open:
+   `read` of new messages as `@guest`, which needs state per guest
+   session.
 4. Daemon: the event queue and the inbox. The user's dotfiles vendor goniec
    and hold the systemd user unit (`make install-goniec-daemon`). The unit
    does not restart on exit code 3, which means another daemon holds the

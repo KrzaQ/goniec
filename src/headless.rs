@@ -53,10 +53,18 @@ pub fn reply_to(instructions: &[Record]) -> Option<String> {
 
 /// The prompt for one turn of a headless session: the trusted user's
 /// messages, verbatim, as if typed at a terminal. The turn's result is the
-/// answer; the responder posts it to the thread. A line from goniec is added
-/// only when messages from others wait, which the session reads as data.
+/// answer; the responder posts it to the thread. goniec adds lines only for
+/// a message that is only a mention (the thread's earlier messages, as
+/// data), and when messages from others wait, which the session reads as
+/// data.
 pub fn prompt(instructions: &[Record], others_waiting: usize) -> String {
-    let mut parts: Vec<String> = instructions.iter().map(|r| r.content.clone()).collect();
+    let mut parts: Vec<String> = Vec::new();
+    for r in instructions {
+        parts.push(r.content.clone());
+        if !r.earlier.is_empty() {
+            parts.push(crate::history::format_earlier(r).trim_end().to_owned());
+        }
+    }
     match others_waiting {
         0 => {}
         1 => parts.push(
@@ -87,6 +95,7 @@ mod tests {
             topic: Some("deploy".into()),
             mentioned: true,
             content: "please check the logs".into(),
+            earlier: Vec::new(),
         }
     }
 
@@ -109,6 +118,19 @@ mod tests {
         let text = prompt(&[record(41, 8, false)], 2);
         assert!(text.starts_with("please check the logs\n\n[goniec] 2 messages from others wait"));
         assert!(prompt(&[], 1).starts_with("[goniec] 1 message from someone else waits"));
+    }
+
+    #[test]
+    fn a_bare_mention_brings_the_earlier_messages() {
+        let mut mention = record(44, 8, false);
+        mention.content = "@**claude**".into();
+        let mut before = record(41, 8, false);
+        before.content = "can you check if pt has it?".into();
+        mention.earlier = vec![before];
+        let text = prompt(&[mention], 0);
+        assert!(text.starts_with("@**claude**\n\n[goniec] Message 44 holds only a mention."));
+        assert!(text.contains("message 41\n> can you check if pt has it?\n"));
+        assert!(text.ends_with("more: goniec read '#ops>deploy' --before 41"));
     }
 
     #[test]

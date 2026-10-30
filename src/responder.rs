@@ -293,7 +293,7 @@ async fn spawn(
             "stream-json",
             "--verbose",
             "--allowedTools",
-            "Bash(goniec send *),Bash(goniec read)",
+            "Bash(goniec send *),Bash(goniec read *)",
             which,
             session_id,
             "--settings",

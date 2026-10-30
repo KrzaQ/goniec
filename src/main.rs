@@ -24,8 +24,18 @@ enum Command {
         /// The message text; `-` or nothing reads it from stdin
         text: Option<String>,
     },
-    /// Print the messages in this session's inbox and mark them delivered
-    Read,
+    /// Print the messages in this session's inbox and mark them delivered,
+    /// or, with a thread, that thread's latest messages from Zulip
+    Read {
+        /// `#channel>topic`, `user:<id>`, `@nick` or a human's full name
+        thread: Option<String>,
+        /// How many messages of the thread
+        #[arg(short = 'n', long, default_value_t = 20, requires = "thread")]
+        count: u32,
+        /// Only messages before this message ID
+        #[arg(long, requires = "thread")]
+        before: Option<u64>,
+    },
     /// List the streams this session's bot has joined
     Rooms,
     /// List the humans with their presence, and every bot
@@ -93,7 +103,19 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Read => {
+        Command::Read {
+            thread: Some(thread),
+            count,
+            before,
+        } => {
+            let keys = Keys::load()?;
+            let text =
+                goniec::history::read(&keys, &binding::session_dir()?, &thread, before, count)
+                    .await?;
+            print!("{text}");
+            Ok(())
+        }
+        Command::Read { thread: None, .. } => {
             let keys = Keys::load()?;
             let id = provision::identity(&keys, &binding::session_dir()?).await?;
             if id.dir.is_none() {
