@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 pub struct Keys {
     pub site: String,
     pub owner_email: String,
+    /// The user's own Zulip account. Only this user can approve a headless
+    /// session's permission request, and in a headless session only this
+    /// user's messages count as instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_user_id: Option<u64>,
     #[serde(default)]
     pub bots: BTreeMap<String, Bot>,
 }

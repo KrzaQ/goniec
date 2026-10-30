@@ -135,11 +135,33 @@ impl Client {
 
     /// Register an event queue for new messages.
     pub async fn register(&self) -> Result<Queue> {
-        let form = [
-            ("event_types", r#"["message"]"#),
-            ("apply_markdown", "false"),
-        ];
+        self.register_for(&["message"]).await
+    }
+
+    /// Register an event queue for the given event types, for example
+    /// `message` and `reaction`.
+    pub async fn register_for(&self, event_types: &[&str]) -> Result<Queue> {
+        let types = serde_json::to_string(event_types)?;
+        let form = [("event_types", types.as_str()), ("apply_markdown", "false")];
         call(self.request(reqwest::Method::POST, "/register").form(&form)).await
+    }
+
+    /// Delete an event queue that is no longer needed.
+    pub async fn delete_queue(&self, queue_id: &str) -> Result<()> {
+        let query = [("queue_id", queue_id)];
+        let request = self
+            .request(reqwest::Method::DELETE, "/events")
+            .query(&query);
+        let _: Value = call(request).await?;
+        Ok(())
+    }
+
+    /// Add an emoji reaction, by its Zulip name, to a message.
+    pub async fn add_reaction(&self, message_id: u64, emoji_name: &str) -> Result<()> {
+        let path = format!("/messages/{message_id}/reactions");
+        let form = [("emoji_name", emoji_name)];
+        let _: Value = call(self.request(reqwest::Method::POST, &path).form(&form)).await?;
+        Ok(())
     }
 
     /// Wait for events after `last_event_id`. Zulip answers within about a
@@ -320,14 +342,26 @@ struct Events {
     events: Vec<Event>,
 }
 
-/// One event. goniec registers for messages only; everything else, such as
-/// a heartbeat, has no `message`.
+/// One event: a message, a reaction, or something else such as a
+/// heartbeat. Only the fields of the kinds goniec registers for are read.
 #[derive(Deserialize)]
 pub struct Event {
     pub id: i64,
+    /// `message`, `reaction`, `heartbeat`, …
+    #[serde(rename = "type", default)]
+    pub kind: String,
     pub message: Option<Message>,
     #[serde(default)]
     pub flags: Vec<String>,
+    /// For a reaction: `add` or `remove`.
+    pub op: Option<String>,
+    /// For a reaction: who reacted. Zulip takes it from the authenticated
+    /// account, so nobody can react on another user's behalf.
+    pub user_id: Option<u64>,
+    /// For a reaction: the message reacted to.
+    pub message_id: Option<u64>,
+    /// For a reaction: the emoji's Unicode code point, for example `2705`.
+    pub emoji_code: Option<String>,
 }
 
 #[derive(Deserialize)]
