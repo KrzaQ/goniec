@@ -28,6 +28,14 @@ const MAX_CHARS: usize = 9_000;
 /// How often the watcher looks at the inbox.
 const POLL: Duration = Duration::from_secs(1);
 
+/// How long `hook context` may spend saving files. Its hook entry has a
+/// timeout of 10 s, and the messages wait for the files.
+const CONTEXT_DOWNLOADS: Duration = Duration::from_secs(5);
+
+/// How long the watcher may spend saving files. Nothing kills it soon,
+/// but the session waits for the wake.
+const WAIT_DOWNLOADS: Duration = Duration::from_secs(60);
+
 /// The hook config sets `"timeout": 2147483` (24.8 days) for the watcher.
 /// That is the largest delay a JavaScript timer holds (2^31 - 1 ms); a larger
 /// value may fire at once. Claude Code kills a watcher at its timeout, so the
@@ -93,6 +101,7 @@ fn has_mine(bot: &SessionBot, session: &str) -> Result<bool> {
 fn take_mine(
     bot: &SessionBot,
     session: &str,
+    deadline: Duration,
     extra: impl Fn(&Record) -> bool,
 ) -> Result<Option<String>> {
     let nick = bot.nick.as_str();
@@ -100,19 +109,25 @@ fn take_mine(
     let mine =
         |r: &Record| threads::may_take(&table, r, session_id(session), bot.unowned) && extra(r);
     // Files go to this session's own temp directory, which it may read
-    // without asking. Without a session ID there is none.
+    // without asking. Without a session ID there is none. They are saved
+    // before the messages are taken: Claude Code kills a hook at its
+    // timeout, and a hook killed after taking would lose the messages.
     let dir = session_id(session)
         .map(|id| uploads::files_dir(&binding::session_dir().unwrap_or_default(), id));
+    let mut errors = Vec::new();
+    if let Some(dir) = &dir {
+        let mut waiting: Vec<Record> = bot.inbox.peek()?.into_iter().filter(&mine).collect();
+        uploads::assign(&mut waiting, dir);
+        errors = uploads::save_all_blocking(&bot.keys, nick, &waiting, dir, deadline);
+    }
     let Some((mut text, taken)) =
         bot.inbox
             .take_fitting_where(nick, MAX_CHARS, dir.as_deref(), mine)?
     else {
         return Ok(None);
     };
-    if let Some(dir) = &dir {
-        for error in uploads::save_all_blocking(&bot.keys, nick, &taken, dir) {
-            text.push_str(&format!("{error}\n"));
-        }
+    for line in errors.into_iter().chain(uploads::missing(&taken)) {
+        text.push_str(&format!("{line}\n"));
     }
     if let Some(id) = session_id(session) {
         let owner = threads::Owner {
@@ -266,7 +281,7 @@ pub fn context() -> i32 {
             // In a headless session the trusted user's messages are the
             // responder's prompt, so the hook leaves them alone.
             let headless = headless::active();
-            take_mine(&bot, &input.session_id, |r| {
+            take_mine(&bot, &input.session_id, CONTEXT_DOWNLOADS, |r| {
                 !headless || !headless::is_instruction(r, bot.trusted_user_id)
             })
         }
@@ -342,7 +357,7 @@ fn wait_for_messages(input: &Input) -> Result<Option<String>> {
         // would wait for the turn to end and then cost a turn of its own.
         if has_mine(&bot, &input.session_id)?
             && !owner.in_turn()
-            && let Some(text) = take_mine(&bot, &input.session_id, |_| true)?
+            && let Some(text) = take_mine(&bot, &input.session_id, WAIT_DOWNLOADS, |_| true)?
         {
             return Ok(Some(text));
         }

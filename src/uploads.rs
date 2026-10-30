@@ -131,6 +131,29 @@ pub fn assign(records: &mut [Record], dir: &Path) {
     }
 }
 
+/// A line for each file of `records` (and of their attached earlier
+/// messages) that is not saved, with how to save it.
+pub fn missing(records: &[Record]) -> Vec<String> {
+    records
+        .iter()
+        .flat_map(|r| {
+            let thread = crate::inbox::shell_quote(&crate::inbox::reply_target(r));
+            r.earlier
+                .iter()
+                .chain(std::iter::once(r))
+                .flat_map(|m| &m.files)
+                .filter(|f| !f.is_file())
+                .map(move |f| {
+                    format!(
+                        "[goniec] Not saved: {}. `goniec read {thread}` saves the thread's files.",
+                        f.display()
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// Where the files a record links go, in `dir`, in link order.
 pub fn paths(dir: &Path, record: &Record) -> Vec<PathBuf> {
     links(&record.content)
@@ -167,9 +190,17 @@ pub async fn save_all(client: &Client, records: &[Record], dir: &Path) -> Vec<St
     errors
 }
 
-/// `save_all` for code without an async runtime, as `nick`'s bot. Does
-/// nothing when no record links a file.
-pub fn save_all_blocking(keys: &Keys, nick: &str, records: &[Record], dir: &Path) -> Vec<String> {
+/// `save_all` for code without an async runtime, as `nick`'s bot, for at
+/// most `deadline`: a hook that Claude Code kills mid-download would lose
+/// the messages it had taken. Files saved by then stay. Does nothing when
+/// no record links a file.
+pub fn save_all_blocking(
+    keys: &Keys,
+    nick: &str,
+    records: &[Record],
+    dir: &Path,
+    deadline: std::time::Duration,
+) -> Vec<String> {
     let any = records
         .iter()
         .flat_map(|r| r.earlier.iter().chain(std::iter::once(r)))
@@ -183,7 +214,12 @@ pub fn save_all_blocking(keys: &Keys, nick: &str, records: &[Record], dir: &Path
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        Ok(runtime.block_on(save_all(&client, records, dir)))
+        Ok(runtime
+            .block_on(tokio::time::timeout(
+                deadline,
+                save_all(&client, records, dir),
+            ))
+            .unwrap_or_default())
     };
     run().unwrap_or_else(|e| vec![format!("[goniec] Could not save the files: {e:#}")])
 }

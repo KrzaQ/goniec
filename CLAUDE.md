@@ -124,8 +124,11 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
   session, also in `-p` mode, and lets the session read files there
   without asking, with no allow rule. The path follows from the message,
   so the notice names the file, and the consumer (the hooks, `goniec read`,
-  the responder) saves it right after taking the message; a failure adds a
-  line to the text. A bot downloads with `GET /user_uploads/…`, which
+  the responder) saves it. The hooks save files before they take the
+  messages, within 5 s for `hook context` (its timeout is 10 s) and 60 s
+  for the watcher: a hook killed after taking would lose the messages (the
+  dotfiles session's review). A file not saved by then gets a line that
+  names `goniec read <thread>`, which saves it again. A bot downloads with `GET /user_uploads/…`, which
   answers with a temporary URL. A headless prompt also carries each image
   of the user's messages (PNG, JPEG, GIF, WebP, at most 3.75 MB, the API's
   5 MB of base64) as an image block, so the model sees it at once (tested
