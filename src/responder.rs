@@ -24,6 +24,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 
+use crate::commands::{self, Command as ChatCommand, Order};
 use crate::config;
 use crate::headless;
 use crate::inbox::{self, Inbox, Record};
@@ -71,8 +72,8 @@ struct Conversation {
     dir: PathBuf,
     /// `config::fingerprint` when the process started.
     config: u64,
-    /// End the process after its current turn, for this reason: a new
-    /// configuration.
+    /// End the process after its current turn, for this reason: `!restart`,
+    /// a new configuration, or a thread that went elsewhere.
     end_after_turn: Option<&'static str>,
     child: Child,
     stdin: Option<ChildStdin>,
@@ -245,6 +246,252 @@ impl Responder {
         Ok(())
     }
 
+    /// Run the trusted user's command for one bot, and answer in the
+    /// command's thread as that bot.
+    pub async fn command(&mut self, keys: &Keys, order: Order) {
+        let Order {
+            nick,
+            record,
+            command,
+        } = order;
+        let answer = match self.run_command(keys, &nick, &record, command) {
+            Ok(text) => text,
+            Err(e) => format!("⚠ {e:#}"),
+        };
+        let thread = threads::key(&record);
+        let posted = match keys.bot(&nick) {
+            Ok(bot) => match Client::new(&keys.site, &bot.email, &bot.api_key) {
+                Ok(client) => post(&client, &thread, &answer).await,
+                Err(e) => Err(e),
+            },
+            Err(e) => Err(e),
+        };
+        if let Err(e) = posted {
+            log(&nick, format!("cannot answer a command: {e:#}"));
+        }
+    }
+
+    fn run_command(
+        &mut self,
+        keys: &Keys,
+        nick: &str,
+        record: &Record,
+        command: ChatCommand,
+    ) -> Result<String> {
+        let thread = threads::key(record);
+        let owner = threads::load(nick)?.get(&thread).cloned();
+        let live = sessions::live()?;
+        let interactive = |id: &str| live.iter().find(|e| e.session_id == id && !e.headless);
+        match command {
+            ChatCommand::Status => Ok(self.status(keys, nick, &thread, owner.as_ref(), &live)),
+            ChatCommand::Restart => {
+                let Some(owner) = owner else {
+                    return Ok("No conversation owns this thread yet.".to_owned());
+                };
+                if interactive(&owner.session_id).is_some() {
+                    return Ok(format!(
+                        "Conversation `{}` runs in an interactive session. `!restart` works only \
+                         for a headless one.",
+                        owner.session_id
+                    ));
+                }
+                match self.running.get_mut(&owner.session_id) {
+                    Some(conv) => {
+                        conv.end_after_turn = Some("!restart");
+                        Ok(format!(
+                            "Conversation `{}` ends after its current turn. The next message \
+                             resumes it with the current configuration.",
+                            owner.session_id
+                        ))
+                    }
+                    None => Ok(format!(
+                        "Conversation `{}` is not running. The next message starts it with the \
+                         current configuration.",
+                        owner.session_id
+                    )),
+                }
+            }
+            ChatCommand::Headless(text) => {
+                if !keys.responds_for(nick) {
+                    return Ok(format!(
+                        "@{nick} has no headless responder. Add it to `responder` in goniec.toml."
+                    ));
+                }
+                let mut answer = match &owner {
+                    Some(o) if interactive(&o.session_id).is_none() => format!(
+                        "This thread already belongs to headless conversation `{}`.",
+                        o.session_id
+                    ),
+                    _ => {
+                        let dir = keys
+                            .bot(nick)?
+                            .dir
+                            .clone()
+                            .ok_or_else(|| anyhow!("@{nick} has no directory"))?;
+                        let new = Owner {
+                            session_id: uuid::Uuid::new_v4().to_string(),
+                            dir,
+                        };
+                        threads::set(nick, &thread, &new)?;
+                        let mut answer = format!(
+                            "This thread now belongs to a new headless conversation `{}`.",
+                            new.session_id
+                        );
+                        if let Some(old) = &owner {
+                            answer.push_str(&format!(
+                                " The interactive session `{}` no longer gets it.",
+                                old.session_id
+                            ));
+                        }
+                        answer
+                    }
+                };
+                // The text after the command is the conversation's first
+                // prompt: it goes through the inbox like any message.
+                if !text.is_empty() {
+                    let mut prompt = record.clone();
+                    prompt.content = text;
+                    Inbox::open(nick)?.put(&prompt)?;
+                } else if !threads::load(nick)?
+                    .get(&thread)
+                    .is_some_and(|o| self.running.contains_key(&o.session_id))
+                {
+                    answer.push_str(" It starts with your next message.");
+                }
+                Ok(answer)
+            }
+            ChatCommand::Interactive => {
+                let Some(session) = live
+                    .iter()
+                    .filter(|e| e.nick == nick && !e.headless)
+                    .max_by_key(|e| e.start)
+                else {
+                    let stays = owner.map_or("without an owner".to_owned(), |o| {
+                        format!("with conversation `{}`", o.session_id)
+                    });
+                    return Ok(format!(
+                        "No interactive session of @{nick} is online. The thread stays {stays}."
+                    ));
+                };
+                if owner
+                    .as_ref()
+                    .is_some_and(|o| o.session_id == session.session_id)
+                {
+                    return Ok(format!(
+                        "This thread already belongs to the interactive session `{}`.",
+                        session.session_id
+                    ));
+                }
+                threads::set(
+                    nick,
+                    &thread,
+                    &Owner {
+                        session_id: session.session_id.clone(),
+                        dir: session.dir.clone(),
+                    },
+                )?;
+                if let Some(conv) = owner
+                    .as_ref()
+                    .and_then(|o| self.running.get_mut(&o.session_id))
+                {
+                    conv.end_after_turn = Some("!interactive");
+                }
+                // The session learns of the thread through the command
+                // message itself, with a note from goniec.
+                let mut note = "This thread is yours now (the user ran `!interactive`).".to_owned();
+                match &owner {
+                    Some(o) => {
+                        note.push_str(&format!(
+                            " Until now it belonged to conversation {}. What was said: \
+                             goniec read {}",
+                            o.session_id,
+                            inbox::shell_quote(&thread)
+                        ));
+                        if let Some(path) = config::transcript(&o.session_id) {
+                            note.push_str(&format!(". Its transcript: {}", path.display()));
+                        }
+                    }
+                    None => note.push_str(&format!(
+                        " What was said: goniec read {}",
+                        inbox::shell_quote(&thread)
+                    )),
+                }
+                let mut notice = record.clone();
+                notice.note = Some(note);
+                Inbox::open(nick)?.put(&notice)?;
+                Ok(format!(
+                    "This thread now belongs to the interactive session `{}` in `{}`.",
+                    session.session_id,
+                    session.dir.display()
+                ))
+            }
+            ChatCommand::Unknown(word) => Ok(format!(
+                "Unknown command `!{word}`. Commands: {}.",
+                commands::HELP
+            )),
+        }
+    }
+
+    /// The answer to `!status`.
+    fn status(
+        &self,
+        keys: &Keys,
+        nick: &str,
+        thread: &str,
+        owner: Option<&Owner>,
+        live: &[Entry],
+    ) -> String {
+        let online = live
+            .iter()
+            .filter(|e| e.nick == nick && !e.headless)
+            .count();
+        let mut out = format!("@{nick} · thread `{thread}`\n");
+        match owner {
+            None => {
+                let next = if keys.dispatches(nick) || (online == 0 && keys.responds_for(nick)) {
+                    "a new headless conversation"
+                } else if online > 0 {
+                    "the interactive session"
+                } else {
+                    "the inbox, until a session of the bot starts"
+                };
+                out.push_str(&format!(
+                    "- owner: none yet; the next message goes to {next}\n"
+                ));
+            }
+            Some(o) => {
+                let state = if let Some(e) = live
+                    .iter()
+                    .find(|e| e.session_id == o.session_id && !e.headless)
+                {
+                    format!("interactive, pid {}", e.pid)
+                } else if let Some(conv) = self.running.get(&o.session_id) {
+                    let s = conv.state.lock().unwrap();
+                    let pid = conv.child.id().unwrap_or(0);
+                    if s.busy {
+                        format!("headless, pid {pid}, in a turn")
+                    } else {
+                        let idle = s.last_turn_end.unwrap_or(conv.started).elapsed().as_secs() / 60;
+                        format!("headless, pid {pid}, idle for {idle} min")
+                    }
+                } else if keys.responds_for(nick) {
+                    "not running; the next message resumes it headless".to_owned()
+                } else {
+                    "not running; messages wait until it is resumed".to_owned()
+                };
+                out.push_str(&format!(
+                    "- owner: conversation `{}` ({state})\n- directory: `{}`\n",
+                    o.session_id,
+                    o.dir.display()
+                ));
+            }
+        }
+        out.push_str(&format!(
+            "- interactive sessions of @{nick} online: {online}"
+        ));
+        out
+    }
+
     fn count(&self, nick: &str) -> usize {
         self.running.values().filter(|c| c.nick == nick).count()
     }
@@ -362,23 +609,25 @@ struct Poster {
 const MAX_MESSAGE_CHARS: usize = 9_000;
 
 impl Poster {
-    /// Post `text` to `target`, split at line ends where it is too long.
     async fn post(&self, target: &str, text: &str) -> Result<()> {
-        for chunk in chunks(text, MAX_MESSAGE_CHARS) {
-            match send::parse_target(target)? {
-                Target::Channel { channel, topic } => {
-                    self.client
-                        .send_to_channel(&channel, &topic, &chunk)
-                        .await?;
-                }
-                Target::UserId(id) => {
-                    self.client.send_direct(id, &chunk).await?;
-                }
-                Target::User(name) => anyhow::bail!("unexpected reply target @{name}"),
-            }
-        }
-        Ok(())
+        post(&self.client, target, text).await
     }
+}
+
+/// Post `text` to `target`, split at line ends where it is too long.
+async fn post(client: &Client, target: &str, text: &str) -> Result<()> {
+    for chunk in chunks(text, MAX_MESSAGE_CHARS) {
+        match send::parse_target(target)? {
+            Target::Channel { channel, topic } => {
+                client.send_to_channel(&channel, &topic, &chunk).await?;
+            }
+            Target::UserId(id) => {
+                client.send_direct(id, &chunk).await?;
+            }
+            Target::User(name) => anyhow::bail!("unexpected reply target @{name}"),
+        }
+    }
+    Ok(())
 }
 
 /// Split `text` into pieces of at most `max` characters, at line ends where

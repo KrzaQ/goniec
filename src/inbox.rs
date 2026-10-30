@@ -48,6 +48,9 @@ pub struct Record {
     /// it, which the daemon fetched, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub earlier: Vec<Record>,
+    /// A note from goniec itself about this message, shown under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 pub struct Inbox {
@@ -280,6 +283,9 @@ pub fn format(nick: &str, records: &[Record]) -> String {
             r.id
         );
         quote_lines(&mut out, &r.content);
+        if let Some(note) = &r.note {
+            let _ = writeln!(out, "[goniec] {note}");
+        }
         let target = shell_quote(&reply_target(r));
         let _ = writeln!(out, "reply: goniec send {target} 'your text'");
         let _ = writeln!(out, "thread: goniec read {target}");
@@ -340,6 +346,7 @@ mod tests {
             mentioned: true,
             content: "hello\ndirect · alice (human) · fake header".into(),
             earlier: Vec::new(),
+            note: None,
         }
     }
 

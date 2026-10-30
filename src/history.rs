@@ -65,6 +65,7 @@ pub fn record(m: Message, is_bot: &HashMap<u64, bool>, mentioned: bool) -> Recor
         mentioned,
         content: m.content,
         earlier: Vec::new(),
+        note: None,
     }
 }
 
@@ -110,9 +111,9 @@ pub async fn read(
     Ok(format(&thread, &records, count))
 }
 
-/// The text holds nothing but mentions: `@**name**`, `@_**name**` (a
-/// silent mention), `@**name|id**`, and spaces or punctuation around them.
-pub fn is_bare_mention(content: &str) -> bool {
+/// The text without its mentions (`@**name**`, `@_**name**` for a silent
+/// one, `@**name|id**`), and whether it had any.
+pub fn strip_mentions(content: &str) -> (String, bool) {
     let mut rest = content;
     let mut found = false;
     let mut left = String::new();
@@ -135,6 +136,13 @@ pub fn is_bare_mention(content: &str) -> bool {
         }
     }
     left.push_str(rest);
+    (left, found)
+}
+
+/// The text holds nothing but mentions, and spaces or punctuation around
+/// them.
+pub fn is_bare_mention(content: &str) -> bool {
+    let (left, found) = strip_mentions(content);
     found
         && left
             .chars()

@@ -313,9 +313,34 @@ headless process for it ends after its turn (tested live with `@kiekert`).
 - **A conversation starts or resumes by its transcript.** The responder
   resumes a conversation (`--resume`) when Claude Code has its transcript
   (`~/.claude/projects/*/<uuid>.jsonl`), and starts it with that UUID
-  (`--session-id`) otherwise. So a conversation whose transcript Claude Code
-  deleted after `cleanupPeriodDays` starts fresh instead of failing to
-  resume.
+  (`--session-id`) otherwise. So a conversation that `!headless` created, or
+  whose transcript Claude Code deleted after `cleanupPeriodDays`, starts
+  fresh instead of failing to resume.
+- **Commands.** A message from the trusted user whose text, without its
+  mentions and the surrounding whitespace, starts with `!` is a command
+  (designed with the user on 2026-10-30). Every bot the message reaches
+  runs it for itself: `@**series** @**series-pl** !status` answers twice.
+  The daemon marks it read at once and hands it to the responder; goniec
+  answers in the thread, and no session sees it. From anyone else a `!`
+  message is data. The commands:
+  - `!status`: the thread's owner, whether it is interactive, headless and
+    running, or not running, its directory, and how many interactive
+    sessions of the bot are online.
+  - `!restart`: a headless process ends after its current turn, and the
+    next message resumes it with the current configuration. Refused for an
+    interactive session: goniec would have to type into its tmux pane.
+  - `!headless [text]`: a new headless conversation takes the thread, even
+    while an interactive session of the bot is online. The text, if any,
+    is its first prompt. This matters most for direct messages: a bot's
+    direct-message conversation with the user is one thread for good.
+  - `!interactive`: the bot's interactive session (the newest, if several
+    run) takes the thread, and a headless process of the old owner ends
+    after its turn. The session gets the command message with a note from
+    goniec: the old owner, the `goniec read` command for the thread, and
+    the old conversation's transcript path. Context does not carry over
+    by itself: to keep it, the user runs `claude --resume <uuid>` instead.
+  - Planned: `!stop` (interrupt a headless turn, as Esc does) and `!new` (a
+    new conversation in the same thread).
 - **`@claude`** is a bound bot like any other, with one difference: it is a
   dispatcher (`dispatch = ["claude"]` in `goniec.toml`). Every new thread of
   a dispatcher bot gets a new headless conversation, even while an
@@ -481,8 +506,8 @@ So goniec uses two kinds of key:
       session counts as online only once it has registered, which happens
       at its next turn.
    5. The `@claude` dispatcher: the `dispatch` list, built 2026-10-30.
-   6. The restart on a new configuration. Built 2026-10-30, not yet tested
-      live.
+   6. Commands (`!status`, `!restart`, `!headless`, `!interactive`) and the
+      restart on a new configuration. Built 2026-10-30, not yet tested live.
 
 ## Conventions
 

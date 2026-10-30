@@ -6,10 +6,13 @@ use std::fs;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 
 use crate::approve;
 use crate::binding;
+use crate::commands::{self, Order};
+use crate::headless;
 use crate::history;
 use crate::inbox::{self, Inbox};
 use crate::keys::{self, Bot, Keys};
@@ -70,6 +73,7 @@ pub async fn run() -> Result<()> {
     let mut last_reload = Instant::now();
     let mut keys: Option<Keys> = None;
     let mut responder = Responder::default();
+    let (orders, mut received) = unbounded_channel::<Order>();
     loop {
         let mtime = fs::metadata(&key_file).and_then(|m| m.modified()).ok();
         // A .goniec can appear or go without the key file changing, so the
@@ -79,13 +83,16 @@ pub async fn run() -> Result<()> {
             last_reload = Instant::now();
             match Keys::load() {
                 Ok(loaded) => {
-                    reconcile(&loaded, &mut running);
+                    reconcile(&loaded, &mut running, &orders);
                     keys = Some(loaded);
                 }
                 Err(e) => eprintln!("goniec daemon: {e:#}"),
             }
         }
         if let Some(keys) = &keys {
+            while let Ok(order) = received.try_recv() {
+                responder.command(keys, order).await;
+            }
             responder.tick(keys, &bound_bots(keys)).await;
         }
         tokio::time::sleep(TICK).await;
@@ -123,7 +130,7 @@ fn bound_bots(keys: &Keys) -> HashMap<String, Bot> {
 
 /// Start tasks for new bots and stop the tasks of bots that are gone or
 /// have a new key.
-fn reconcile(keys: &Keys, running: &mut HashMap<String, Running>) {
+fn reconcile(keys: &Keys, running: &mut HashMap<String, Running>, orders: &UnboundedSender<Order>) {
     let wanted = bound_bots(keys);
     running.retain(|nick, r| {
         let keep = wanted
@@ -151,6 +158,7 @@ fn reconcile(keys: &Keys, running: &mut HashMap<String, Running>) {
             keys.trusted_user_id,
             nick.clone(),
             bot.clone(),
+            orders.clone(),
         ));
         let mark = tokio::spawn(mark_read(
             keys.site.clone(),
@@ -169,10 +177,16 @@ fn reconcile(keys: &Keys, running: &mut HashMap<String, Running>) {
 }
 
 /// Listen as one bot, forever. Errors restart the listener after a delay.
-async fn listen(site: String, trusted_user_id: Option<u64>, nick: String, bot: Bot) {
+async fn listen(
+    site: String,
+    trusted_user_id: Option<u64>,
+    nick: String,
+    bot: Bot,
+    orders: UnboundedSender<Order>,
+) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        let err = match Listener::new(&site, trusted_user_id, &nick, &bot).await {
+        let err = match Listener::new(&site, trusted_user_id, &nick, &bot, orders.clone()).await {
             Ok(mut listener) => {
                 backoff = Duration::from_secs(1);
                 listener.run().await
@@ -210,12 +224,20 @@ struct Listener {
     seen: HashSet<u64>,
     /// Whether each known user is a bot.
     is_bot: HashMap<u64, bool>,
+    /// The trusted user's commands go to the responder.
+    orders: UnboundedSender<Order>,
 }
 
 impl Listener {
     /// Register the queue, then fetch what is unread. In this order no
     /// message can arrive between the two unnoticed.
-    async fn new(site: &str, trusted_user_id: Option<u64>, nick: &str, bot: &Bot) -> Result<Self> {
+    async fn new(
+        site: &str,
+        trusted_user_id: Option<u64>,
+        nick: &str,
+        bot: &Bot,
+        orders: UnboundedSender<Order>,
+    ) -> Result<Self> {
         let client = Client::new(site, &bot.email, &bot.api_key)?;
         let me = client.me().await?;
         if me.user_id != bot.user_id {
@@ -236,6 +258,7 @@ impl Listener {
             seen: HashSet::new(),
             is_bot: HashMap::new(),
             trusted_user_id,
+            orders,
         };
         listener.refresh_users().await?;
         for narrow in [("is", "dm"), ("is", "mentioned")] {
@@ -296,6 +319,27 @@ impl Listener {
         }
         let bare = !direct && history::is_bare_mention(&m.content);
         let mut record = history::record(m, &self.is_bot, mentioned);
+        // The trusted user's command goes to the responder, never to the
+        // agent. It is marked read at once, so a restart does not run it
+        // again.
+        if headless::is_instruction(&record, self.trusted_user_id)
+            && let Some(command) = commands::parse(&record.content)
+        {
+            self.client.mark_read(&[record.id]).await?;
+            log(
+                &self.nick,
+                format!("command !{} in message {}", command.name(), record.id),
+            );
+            let order = Order {
+                nick: self.nick.clone(),
+                record,
+                command,
+            };
+            if self.orders.send(order).is_err() {
+                log(&self.nick, "the responder is gone; command dropped");
+            }
+            return Ok(());
+        }
         // A bare mention points at the messages before it, which this bot
         // never got: attach a few. Without them the agent still gets the
         // message, and its `thread:` line.

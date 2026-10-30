@@ -71,6 +71,14 @@ pub fn claim(nick: &str, records: &[Record], owner: &Owner) -> Result<()> {
     })
 }
 
+/// Give thread `key` to `owner`, whoever owned it before: the trusted
+/// user's `!headless` and `!interactive`.
+pub fn set(nick: &str, key: &str, owner: &Owner) -> Result<()> {
+    update(nick, |table| {
+        table.insert(key.to_owned(), owner.clone());
+    })
+}
+
 /// Change the table under the lock, and write it back atomically.
 fn update(nick: &str, change: impl FnOnce(&mut Table)) -> Result<()> {
     let path = path(nick)?;
@@ -105,6 +113,7 @@ mod tests {
             mentioned: true,
             content: "hi".into(),
             earlier: Vec::new(),
+            note: None,
         }
     }
 

@@ -96,6 +96,7 @@ mod tests {
             mentioned: true,
             content: "please check the logs".into(),
             earlier: Vec::new(),
+            note: None,
         }
     }
 
