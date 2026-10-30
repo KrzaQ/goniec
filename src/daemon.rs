@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use tokio::task::JoinHandle;
 
+use crate::approve;
 use crate::binding;
 use crate::inbox::{self, Inbox, Record};
 use crate::keys::{self, Bot, Keys};
@@ -135,7 +136,12 @@ fn reconcile(keys: &Keys, running: &mut HashMap<String, Running>) {
             }
         };
         log(&nick, "started");
-        let listen = tokio::spawn(listen(keys.site.clone(), nick.clone(), bot.clone()));
+        let listen = tokio::spawn(listen(
+            keys.site.clone(),
+            keys.trusted_user_id,
+            nick.clone(),
+            bot.clone(),
+        ));
         let mark = tokio::spawn(mark_read(
             keys.site.clone(),
             nick.clone(),
@@ -153,10 +159,10 @@ fn reconcile(keys: &Keys, running: &mut HashMap<String, Running>) {
 }
 
 /// Listen as one bot, forever. Errors restart the listener after a delay.
-async fn listen(site: String, nick: String, bot: Bot) {
+async fn listen(site: String, trusted_user_id: Option<u64>, nick: String, bot: Bot) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        let err = match Listener::new(&site, &nick, &bot).await {
+        let err = match Listener::new(&site, trusted_user_id, &nick, &bot).await {
             Ok(mut listener) => {
                 backoff = Duration::from_secs(1);
                 listener.run().await
@@ -182,6 +188,9 @@ async fn listen(site: String, nick: String, bot: Bot) {
 struct Listener {
     nick: String,
     user_id: u64,
+    /// The trusted user's typed answers to approval requests are for the
+    /// permission hook, not for the agent.
+    trusted_user_id: Option<u64>,
     client: Client,
     inbox: Inbox,
     queue_id: String,
@@ -196,7 +205,7 @@ struct Listener {
 impl Listener {
     /// Register the queue, then fetch what is unread. In this order no
     /// message can arrive between the two unnoticed.
-    async fn new(site: &str, nick: &str, bot: &Bot) -> Result<Self> {
+    async fn new(site: &str, trusted_user_id: Option<u64>, nick: &str, bot: &Bot) -> Result<Self> {
         let client = Client::new(site, &bot.email, &bot.api_key)?;
         let me = client.me().await?;
         if me.user_id != bot.user_id {
@@ -216,6 +225,7 @@ impl Listener {
             last_event_id: queue.last_event_id,
             seen: HashSet::new(),
             is_bot: HashMap::new(),
+            trusted_user_id,
         };
         listener.refresh_users().await?;
         for narrow in [("is", "dm"), ("is", "mentioned")] {
@@ -265,6 +275,10 @@ impl Listener {
         let direct = m.kind == "private";
         let mentioned = flags.iter().any(|f| MENTION_FLAGS.contains(&f.as_str()));
         if !direct && !mentioned {
+            return Ok(());
+        }
+        if direct && Some(m.sender_id) == self.trusted_user_id && approve::is_reply(&m.content) {
+            self.client.mark_read(&[m.id]).await?;
             return Ok(());
         }
         if !self.is_bot.contains_key(&m.sender_id) {
