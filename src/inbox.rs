@@ -128,17 +128,20 @@ impl Inbox {
     /// how many are left. One message is always taken; if it alone is too
     /// long, its content is cut. Returns `None` when nothing is new.
     pub fn take_fitting(&self, nick: &str, max_chars: usize) -> Result<Option<String>> {
-        self.take_fitting_where(nick, max_chars, |_| true)
+        Ok(self
+            .take_fitting_where(nick, max_chars, |_| true)?
+            .map(|(text, _)| text))
     }
 
     /// `take_fitting` for only the messages that `wanted` accepts. The count
-    /// of messages left also counts only those.
+    /// of messages left also counts only those. Also returns the messages
+    /// taken.
     pub fn take_fitting_where(
         &self,
         nick: &str,
         max_chars: usize,
         wanted: impl Fn(&Record) -> bool,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<(String, Vec<Record>)>> {
         let candidates: Vec<Record> = self.peek()?.into_iter().filter(|r| wanted(r)).collect();
         let mut chosen: Vec<Record> = Vec::new();
         for record in &candidates {
@@ -180,7 +183,7 @@ impl Inbox {
             return Ok(None);
         }
         let left = self.peek()?.iter().filter(|r| wanted(r)).count();
-        Ok(Some(format_with_rest(nick, &taken, left)))
+        Ok(Some((format_with_rest(nick, &taken, left), taken)))
     }
 
     /// The new messages, oldest first, without taking them.

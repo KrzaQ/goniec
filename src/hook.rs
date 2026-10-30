@@ -15,10 +15,11 @@ use serde::Deserialize;
 use crate::approve;
 use crate::binding;
 use crate::headless;
-use crate::inbox::{self, Inbox};
+use crate::inbox::{self, Inbox, Record};
 use crate::keys::Keys;
 use crate::process::Owner;
 use crate::sessions;
+use crate::threads;
 
 /// Claude Code takes at most 10,000 characters of hook output.
 const MAX_CHARS: usize = 9_000;
@@ -68,6 +69,44 @@ fn log(what: &str, err: &anyhow::Error) {
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(file, "{now} hook {what}: {err:#}");
     }
+}
+
+/// The conversation's session ID, if the hook input names one.
+fn session_id(id: &str) -> Option<&str> {
+    (!id.is_empty()).then_some(id)
+}
+
+/// A message waits that this conversation may take: its thread belongs to
+/// the conversation, or has no owner yet.
+fn has_mine(nick: &str, inbox: &Inbox, session: &str) -> Result<bool> {
+    let table = threads::load(nick)?;
+    Ok(inbox
+        .peek()?
+        .iter()
+        .any(|r| threads::may_take(&table, r, session_id(session))))
+}
+
+/// Take the messages this conversation may take and `extra` accepts, as one
+/// text, and make the conversation the owner of their threads.
+fn take_mine(
+    nick: &str,
+    inbox: &Inbox,
+    session: &str,
+    extra: impl Fn(&Record) -> bool,
+) -> Result<Option<String>> {
+    let table = threads::load(nick)?;
+    let mine = |r: &Record| threads::may_take(&table, r, session_id(session)) && extra(r);
+    let Some((text, taken)) = inbox.take_fitting_where(nick, MAX_CHARS, mine)? else {
+        return Ok(None);
+    };
+    if let Some(id) = session_id(session) {
+        let owner = threads::Owner {
+            session_id: id.to_owned(),
+            dir: binding::session_dir()?,
+        };
+        threads::claim(nick, &taken, &owner)?;
+    }
+    Ok(Some(text))
 }
 
 /// Record that this conversation is live in this session. Failures are only
@@ -194,15 +233,14 @@ pub fn run(event: Option<&str>) -> i32 {
 pub fn context() -> i32 {
     let input = read_input();
     let text = match session_inbox().and_then(|found| match found {
-        // In a headless session the trusted user's messages are the
-        // responder's prompt, so the hook leaves them alone.
-        Some((nick, inbox, trusted)) if headless::active() => {
+        Some((nick, inbox, trusted)) => {
             register_session(&input, &nick);
-            inbox.take_fitting_where(&nick, MAX_CHARS, |r| !headless::is_instruction(r, trusted))
-        }
-        Some((nick, inbox, _)) => {
-            register_session(&input, &nick);
-            inbox.take_fitting(&nick, MAX_CHARS)
+            // In a headless session the trusted user's messages are the
+            // responder's prompt, so the hook leaves them alone.
+            let headless = headless::active();
+            take_mine(&nick, &inbox, &input.session_id, |r| {
+                !headless || !headless::is_instruction(r, trusted)
+            })
         }
         None => Ok(None),
     }) {
@@ -250,12 +288,16 @@ fn wait_for_messages(input: &Input) -> Result<Option<String>> {
     if headless::active() {
         return Ok(None);
     }
-    // One watcher per nickname. A second one, from the next Stop while the
-    // first still waits, ends at once. The lock ends with the process.
+    // One watcher per conversation. A second one, from the next Stop while
+    // the first still waits, ends at once. The lock ends with the process.
+    let lock_name = match input.session_id.as_str() {
+        "" => "watcher.lock".to_owned(),
+        id => format!("watcher-{id}.lock"),
+    };
     let lock_path = inbox::state_dir()?
         .join("inbox")
         .join(&nick)
-        .join("watcher.lock");
+        .join(lock_name);
     let lock = fs::File::create(&lock_path)?;
     if lock.try_lock().is_err() {
         return Ok(None);
@@ -269,9 +311,9 @@ fn wait_for_messages(input: &Input) -> Result<Option<String>> {
     loop {
         // While a turn runs, PostToolBatch delivers inline. A wake from here
         // would wait for the turn to end and then cost a turn of its own.
-        if inbox.pending()? > 0
+        if has_mine(&nick, &inbox, &input.session_id)?
             && !owner.in_turn()
-            && let Some(text) = inbox.take_fitting(&nick, MAX_CHARS)?
+            && let Some(text) = take_mine(&nick, &inbox, &input.session_id, |_| true)?
         {
             return Ok(Some(text));
         }

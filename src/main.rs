@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 
 use goniec::inbox::{self, Inbox};
 use goniec::keys::Keys;
-use goniec::{binding, daemon, provision, rooms, send};
+use goniec::{binding, daemon, provision, rooms, send, threads};
 
 /// goniec carries chat messages between the user and AI agent sessions.
 #[derive(Parser)]
@@ -97,13 +97,26 @@ async fn run(cli: Cli) -> Result<()> {
                 bail!("read for @guest is not built yet; only a bound session has an inbox");
             }
             let inbox = Inbox::open(&id.nick)?;
+            // Only the threads of this conversation, or threads without an
+            // owner. Claude Code names the conversation in the Bash tool.
+            let session = std::env::var("CLAUDE_CODE_SESSION_ID")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let table = threads::load(&id.nick)?;
             // In a headless session the trusted user's messages are the
             // responder's prompt, not data to read.
-            let records = if goniec::headless::active() {
-                inbox.take_where(|r| !goniec::headless::is_instruction(r, keys.trusted_user_id))?
-            } else {
-                inbox.take()?
-            };
+            let headless = goniec::headless::active();
+            let records = inbox.take_where(|r| {
+                threads::may_take(&table, r, session.as_deref())
+                    && !(headless && goniec::headless::is_instruction(r, keys.trusted_user_id))
+            })?;
+            if let (Some(session), Some(dir)) = (&session, &id.dir) {
+                let owner = threads::Owner {
+                    session_id: session.clone(),
+                    dir: dir.clone(),
+                };
+                threads::claim(&id.nick, &records, &owner)?;
+            }
             if !records.is_empty() {
                 print!("{}", inbox::format(&id.nick, &records));
             }
