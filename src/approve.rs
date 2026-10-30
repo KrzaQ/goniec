@@ -138,6 +138,14 @@ pub fn describe(tool_name: &str, input: &Value) -> String {
     out
 }
 
+/// The call to ask about.
+pub struct Request<'a> {
+    pub tool_name: &'a str,
+    pub input: &'a Value,
+    /// Why the auto-mode classifier blocked the call, for a blocked call.
+    pub blocked: Option<&'a str>,
+}
+
 /// Ask the trusted user and wait for the answer.
 pub async fn ask(
     site: &str,
@@ -145,9 +153,13 @@ pub async fn ask(
     bot: &Bot,
     trusted_user_id: u64,
     place: &Place,
-    tool_name: &str,
-    input: &Value,
+    request: &Request<'_>,
 ) -> Result<Answer> {
+    let Request {
+        tool_name,
+        input,
+        blocked,
+    } = *request;
     let wait = std::env::var("GONIEC_APPROVAL_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -160,8 +172,12 @@ pub async fn ask(
     // Register before asking, so that even an instant answer is in the queue.
     let queue = client.register_for(&["message", "reaction"]).await?;
     let code = new_code();
+    // A call the auto-mode classifier blocked says why.
+    let why = blocked.map_or(String::new(), |reason| {
+        format!("\nThe auto-mode classifier blocked it: {reason}")
+    });
     let question = format!(
-        "**@{nick}** asks to use **{tool_name}**:\n{}\n\n\
+        "**@{nick}** asks to use **{tool_name}**:\n{}{why}\n\n\
          React ✅ to allow or ❌ to deny, or reply `yes {code}` / `no {code}`. \
          No answer within {} means deny.",
         describe(tool_name, input),

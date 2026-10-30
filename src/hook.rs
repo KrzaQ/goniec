@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::approve;
 use crate::binding;
+use crate::grants;
 use crate::headless;
 use crate::inbox::{self, Inbox, Record};
 use crate::keys::Keys;
@@ -59,6 +60,9 @@ struct Input {
     tool_name: String,
     #[serde(default)]
     tool_input: serde_json::Value,
+    /// For `PermissionDenied`: why the auto-mode classifier blocked the call.
+    #[serde(default)]
+    reason: String,
 }
 
 fn read_input() -> Input {
@@ -173,7 +177,7 @@ pub fn end() -> i32 {
 /// denies the tool call, because a headless session cannot prompt.
 pub fn permission() -> i32 {
     let input = read_input();
-    let decision = match ask_trusted_user(&input) {
+    let decision = match ask_trusted_user(&input, None) {
         Ok(Some(approve::Answer::Allow)) => serde_json::json!({ "behavior": "allow" }),
         Ok(Some(approve::Answer::Deny(why))) => {
             serde_json::json!({ "behavior": "deny", "message": format!("Not approved: {why}.") })
@@ -191,7 +195,53 @@ pub fn permission() -> i32 {
     0
 }
 
-fn ask_trusted_user(input: &Input) -> Result<Option<approve::Answer>> {
+/// For `PermissionDenied`, in a headless session that runs in auto mode:
+/// ask the trusted user about a call the classifier blocked. On a yes,
+/// record a one-time grant and tell the model to retry; `pretool` then
+/// allows the retry. On a no, or no answer, the block stands.
+pub fn denied() -> i32 {
+    let input = read_input();
+    let reason = (!input.reason.is_empty()).then_some(input.reason.as_str());
+    match ask_trusted_user(&input, Some(reason.unwrap_or("no reason given"))) {
+        Ok(Some(approve::Answer::Allow)) => {
+            if let Err(e) = grants::grant(&input.session_id, &input.tool_name, &input.tool_input) {
+                log("denied", &e);
+                return 0;
+            }
+            let output = serde_json::json!({
+                "hookSpecificOutput": { "hookEventName": "PermissionDenied", "retry": true }
+            });
+            println!("{output}");
+        }
+        Ok(_) => {}
+        Err(e) => log("denied", &e),
+    }
+    0
+}
+
+/// For `PreToolUse` in a headless session: allow a call the trusted user
+/// approved after the classifier blocked it, once. Every other call passes
+/// untouched.
+pub fn pretool() -> i32 {
+    let input = read_input();
+    match grants::take(&input.session_id, &input.tool_name, &input.tool_input) {
+        Ok(true) => {
+            let output = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "the user approved this call in the chat",
+                }
+            });
+            println!("{output}");
+        }
+        Ok(false) => {}
+        Err(e) => log("pretool", &e),
+    }
+    0
+}
+
+fn ask_trusted_user(input: &Input, blocked: Option<&str>) -> Result<Option<approve::Answer>> {
     let dir = binding::session_dir()?;
     let Some(binding) = binding::find(&dir)? else {
         return Ok(None);
@@ -214,8 +264,11 @@ fn ask_trusted_user(input: &Input) -> Result<Option<approve::Answer>> {
         bot,
         trusted,
         &approve::Place::from_env(),
-        &input.tool_name,
-        &input.tool_input,
+        &approve::Request {
+            tool_name: &input.tool_name,
+            input: &input.tool_input,
+            blocked,
+        },
     ))?;
     Ok(Some(answer))
 }
@@ -264,6 +317,8 @@ pub fn run(event: Option<&str>) -> i32 {
         Some("wait") => wait(),
         Some("context") => context(),
         Some("permission") => permission(),
+        Some("denied") => denied(),
+        Some("pretool") => pretool(),
         Some("end") => end(),
         other => {
             log("dispatch", &anyhow::anyhow!("unknown hook event {other:?}"));

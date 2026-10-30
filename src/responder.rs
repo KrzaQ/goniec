@@ -576,12 +576,23 @@ async fn spawn(
         .append(true)
         .open(state_dir.join(format!("{nick}.log")))?;
 
-    let settings = serde_json::json!({
-        "hooks": { "PermissionRequest": [{ "hooks": [{
+    // `permission` answers what reaches the permission flow (ask rules, and
+    // the fallback after repeated blocks). `denied` asks the user about a
+    // call the auto-mode classifier blocked, and `pretool` allows the retry
+    // once the user said yes.
+    let hook = |event: &str, timeout: u64| {
+        serde_json::json!([{ "hooks": [{
             "type": "command",
-            "command": format!("'{}' hook permission", goniec.display()),
-            "timeout": PERMISSION_TIMEOUT,
-        }] }] }
+            "command": format!("'{}' hook {event}", goniec.display()),
+            "timeout": timeout,
+        }] }])
+    };
+    let settings = serde_json::json!({
+        "hooks": {
+            "PermissionRequest": hook("permission", PERMISSION_TIMEOUT),
+            "PermissionDenied": hook("denied", PERMISSION_TIMEOUT),
+            "PreToolUse": hook("pretool", 10),
+        }
     });
     // The service's PATH may lack the user's own bin directories, and the
     // session runs `goniec send` from its Bash tool.
@@ -601,6 +612,11 @@ async fn spawn(
             "--output-format",
             "stream-json",
             "--verbose",
+            // Auto mode: the classifier allows what is safe and what the
+            // user's prompt asks for, and blocks the rest. The user wanted
+            // to be asked only about calls the classifier will not allow.
+            "--permission-mode",
+            "auto",
             "--allowedTools",
             "Bash(goniec send *),Bash(goniec read *)",
             which,

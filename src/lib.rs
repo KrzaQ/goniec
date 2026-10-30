@@ -3,6 +3,7 @@ pub mod binding;
 pub mod commands;
 pub mod config;
 pub mod daemon;
+pub mod grants;
 pub mod headless;
 pub mod history;
 pub mod hook;

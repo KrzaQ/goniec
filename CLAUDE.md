@@ -411,7 +411,27 @@ offline bot from the chat. Messages from anyone else stay data.
   `goniec send *` and `goniec read *`. It also loads the user's global
   `~/.claude/settings.json`, so the tools allowed there (read-only git
   commands and the like) run without asking in Zulip too.
-- Everything else goes to a `PermissionRequest` hook, `goniec hook
+- **It runs in auto mode** (`--permission-mode auto`), the user's choice
+  (2026-10-30): the classifier allows what is safe and what the user's
+  prompt asks for, and the user is asked only about calls it blocks. The
+  user's chat message is the prompt, so the classifier counts it as the
+  user's intent; messages from others reach the session only as tool
+  output, so they never do.
+- **A blocked call is asked about.** A block is a denial, not a prompt, and
+  no setting turns it into one (the docs, 2026-10-30). So goniec adds
+  `PermissionDenied` to the headless settings: `goniec hook denied` asks
+  the trusted user, with the classifier's reason, and waits; Claude Code
+  holds the turn meanwhile. On a yes it records a one-time grant for that
+  exact call (tool and input without `description`, hashed, in
+  `<state>/grants/<session>.json`, 15 minutes) and returns `retry: true`.
+  On the retry, `goniec hook pretool` (`PreToolUse`) finds the grant, uses
+  it up and answers `allow`. Measured on 2026-10-30 in `-p` auto mode with
+  a `soft_deny` rule: a `PreToolUse` allow skips the classifier (without
+  it the retry was blocked three times), and `PermissionDenied` fires and
+  is waited for. Tested live: the question reached the topic with the
+  reason, and no answer left the block in place.
+- Whatever still reaches the permission flow (ask rules, and the fallback
+  after 3 blocks in a row) goes to a `PermissionRequest` hook, `goniec hook
   permission`. The docs say the hook also runs in `-p` sessions: "if no hook
   returns a decision, it denies the tool call", and a hook may answer `allow`
   or `deny`.
