@@ -94,6 +94,11 @@ pub async fn send(
     if text.trim().is_empty() && attach.is_empty() {
         bail!("the message is empty");
     }
+    // Only goniec's approval flow asks for approvals; a message of a
+    // session's own must not look like one of its questions.
+    if text.contains(crate::approve::QUESTION_SENTENCE) {
+        bail!("goniec does not send a message that looks like an approval question");
+    }
     // The session directory, and the session's own temp directory, where
     // its scratchpad is.
     let mut roots = vec![session_dir.to_owned()];

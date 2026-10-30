@@ -25,7 +25,8 @@ use serde_json::Value;
 
 use crate::inbox;
 
-/// A grant the model does not use within this time lapses.
+/// A grant the model does not use within this time lapses. Zulip's side
+/// lapses sooner: `approve::MAX_BLOCKED_AGE` after the question.
 const LIFETIME: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Serialize, Deserialize)]
@@ -36,13 +37,17 @@ struct Grant {
     question: Question,
 }
 
-/// The Zulip question a grant comes from, for `approve::verify`.
+/// The Zulip question a grant comes from, for `approve::verify`, with what
+/// it showed beyond the call: the classifier's reason and the wait. A
+/// forged value only makes the exact match fail.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Question {
     pub message_id: u64,
     pub code: String,
     /// `#channel>topic`, or `direct`.
     pub place: String,
+    pub reason: String,
+    pub wait_secs: u64,
 }
 
 /// The call a grant is for: the tool and its input, without the
@@ -118,9 +123,6 @@ fn grant_at(path: &PathBuf, tool_name: &str, input: &Value, question: Question) 
     store(path, &grants)
 }
 
-/// How long a question counts as an approval.
-pub const MAX_AGE: Duration = LIFETIME;
-
 /// Use up a grant for this call, if there is one, and return its question,
 /// which the caller must still check with Zulip.
 pub fn take(session_id: &str, tool_name: &str, input: &Value) -> Result<Option<Question>> {
@@ -169,6 +171,8 @@ mod tests {
             message_id: 177,
             code: "ae65".into(),
             place: "#ops>goniec test".into(),
+            reason: "dangerous".into(),
+            wait_secs: 300,
         };
         assert_eq!(take_at(&path, "Bash", &call).unwrap(), None);
         grant_at(&path, "Bash", &call, question.clone()).unwrap();
@@ -192,6 +196,8 @@ mod tests {
             message_id: 1,
             code: "0000".into(),
             place: "direct".into(),
+            reason: String::new(),
+            wait_secs: 300,
         };
         store(
             &path,

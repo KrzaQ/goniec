@@ -198,6 +198,9 @@ pub fn permission() -> i32 {
     0
 }
 
+/// What a blocked call's question says when Claude Code gives no reason.
+const NO_REASON: &str = "no reason given";
+
 /// For `PermissionDenied`, in a headless session that runs in auto mode:
 /// ask the trusted user about a call the classifier blocked. On a yes,
 /// record a grant that names the question and tell the model to retry;
@@ -206,12 +209,14 @@ pub fn permission() -> i32 {
 pub fn denied() -> i32 {
     let input = read_input();
     let reason = (!input.reason.is_empty()).then_some(input.reason.as_str());
-    match ask_trusted_user(&input, Some(reason.unwrap_or("no reason given"))) {
+    match ask_trusted_user(&input, Some(reason.unwrap_or(NO_REASON))) {
         Ok(Some((outcome, place))) if outcome.answer == approve::Answer::Allow => {
             let question = grants::Question {
                 message_id: outcome.message_id,
                 code: outcome.code,
                 place: place.text(),
+                reason: reason.unwrap_or(NO_REASON).to_owned(),
+                wait_secs: outcome.wait.as_secs(),
             };
             if let Err(e) = grants::grant(
                 &input.session_id,
@@ -325,16 +330,18 @@ fn approved_in_zulip(input: &Input, question: &grants::Question) -> Result<bool>
     let request = approve::Request {
         tool_name: &input.tool_name,
         input: &input.tool_input,
-        blocked: None,
+        blocked: Some(&question.reason),
     };
     let check = approve::Check {
+        nick: &nick,
         bot_user_id: bot.user_id,
         trusted_user_id: trusted,
         place: &place,
         message_id: question.message_id,
         code: &question.code,
         request: &request,
-        max_age: grants::MAX_AGE,
+        wait: std::time::Duration::from_secs(question.wait_secs),
+        max_age: approve::MAX_BLOCKED_AGE,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

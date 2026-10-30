@@ -435,18 +435,27 @@ offline bot from the chat. Messages from anyone else stay data.
   `<state>/grants/<session>.json`, 15 minutes) and returns `retry: true`.
   On the retry, `goniec hook pretool` (`PreToolUse`) finds the grant, uses
   it up, and answers `allow` only after Zulip confirms the approval: the
-  question it names was sent by this bot, in that place, at most 15
-  minutes ago, shows exactly this call and its code, and carries the
-  trusted user's ✅ without ❌ (or the user replied `yes <code>` there).
+  question it names was sent by this bot, in that place, at most 6
+  minutes ago (the question waits 5), is character for character the
+  question goniec posts for exactly this call, and carries the trusted
+  user's ✅ without ❌ (or the user replied `yes <code>` there).
+- **A question shows the whole call:** the full input, a Write's content
+  and an Edit's strings included, without the Bash `description`, which
+  the model writes freely. A call too long to show in full (8,000
+  characters) is not asked about; it stays denied. An exact match, not a
+  search: a session can post as its bot, and could hide the real call
+  under a harmless one, in a spoiler for example. `goniec send` refuses
+  text with the question's fixed sentence. Measured on 2026-10-30: Zulip
+  returns a message's raw content byte for byte. Within its 6 minutes, a
+  forged grant can replay an approved call with exactly the same input;
+  goniec cannot keep a secret from a session that runs as the same user.
   The grant file proves nothing by itself: the session runs as the same
   Unix user and could write it, and a `PreToolUse` allow skips the
   classifier, so a forged grant would have run a blocked call with no one
-  asked (the dotfiles session's review of the first version, 2026-10-30).
+  asked (the dotfiles session's reviews, 2026-10-30, also found the
+  partial call display and the substring match).
   Forging the Zulip side needs the user's Zulip account. The headless
-  settings also deny Edit on the grants directory, a second wall. Checked
-  live on 2026-10-30 against old questions: an approved question for the
-  same call passes, an unanswered one and an approved one for another call
-  do not. Measured on 2026-10-30 in `-p` auto mode with
+  settings also deny Edit on the grants directory, a second wall. Measured on 2026-10-30 in `-p` auto mode with
   a `soft_deny` rule: a `PreToolUse` allow skips the classifier (without
   it the retry was blocked three times), and `PermissionDenied` fires and
   is waited for. Tested live: the question reached the topic with the

@@ -27,8 +27,22 @@ const DENY_NAME: &str = "cross_mark";
 /// for tests.
 const WAIT: Duration = Duration::from_secs(14 * 60);
 
-/// How much of a tool's input the question shows.
-const MAX_INPUT_CHARS: usize = 1500;
+/// The longest call a question shows. Zulip takes 10,000 characters per
+/// message; a longer call is not asked about.
+const MAX_SHOWN_CHARS: usize = 8_000;
+
+/// How long to wait for an answer about a call the auto-mode classifier
+/// blocked. Shorter than `WAIT`: the approval counts only until
+/// `MAX_BLOCKED_AGE`, and the shorter that is, the less a forged grant can
+/// replay an approved call.
+pub const WAIT_BLOCKED: Duration = Duration::from_secs(5 * 60);
+
+/// How old a question about a blocked call may be when the retry comes.
+pub const MAX_BLOCKED_AGE: Duration = Duration::from_secs(6 * 60);
+
+/// Every question has this sentence, and `goniec send` refuses to post it,
+/// so a session cannot pass its own message off as a question.
+pub const QUESTION_SENTENCE: &str = "React ✅ to allow or ❌ to deny";
 
 /// Where the question goes: the topic where the user is talking to the
 /// session, or a direct message to the trusted user.
@@ -87,6 +101,8 @@ pub struct Outcome {
     pub answer: Answer,
     pub message_id: u64,
     pub code: String,
+    /// How long the question said it would wait.
+    pub wait: Duration,
 }
 
 #[derive(Debug, PartialEq)]
@@ -148,27 +164,62 @@ fn fence(text: &str) -> String {
     "`".repeat(longest.max(2) + 1)
 }
 
-/// What the tool wants to do, as Zulip markdown.
-pub fn describe(tool_name: &str, input: &Value) -> String {
-    let shown = match (
-        tool_name,
-        input["command"].as_str(),
-        input["file_path"].as_str(),
-    ) {
-        ("Bash", Some(command), _) => command.to_owned(),
-        (_, _, Some(path)) => path.to_owned(),
-        _ => serde_json::to_string_pretty(input).unwrap_or_default(),
+/// The whole call, as Zulip markdown, or nothing when it is too long to
+/// show in full. A question never cuts a call short: the user would approve
+/// what they see, and the rest could be anything. The Bash `description`
+/// is left out, because the model writes it freely and nothing binds it to
+/// the command.
+pub fn describe(tool_name: &str, input: &Value) -> Option<String> {
+    let mut call = input.clone();
+    if let Some(map) = call.as_object_mut() {
+        map.remove("description");
+    }
+    // A plain Bash call shows its command; any other field (a timeout, a
+    // sandbox switch) shows the whole input.
+    let plain_bash = tool_name == "Bash" && call.as_object().is_some_and(|m| m.len() == 1);
+    let shown = match call["command"].as_str() {
+        Some(command) if plain_bash => command.to_owned(),
+        _ => serde_json::to_string_pretty(&call).ok()?,
     };
-    let mut shown: String = shown.chars().take(MAX_INPUT_CHARS).collect();
-    if shown.chars().count() == MAX_INPUT_CHARS {
-        shown.push_str("\n…");
+    if shown.chars().count() > MAX_SHOWN_CHARS {
+        return None;
     }
     let f = fence(&shown);
-    let mut out = format!("{f}\n{shown}\n{f}");
-    if let Some(why) = input["description"].as_str() {
-        out.push_str(&format!("\n{why}"));
-    }
-    out
+    Some(format!("{f}\n{shown}\n{f}"))
+}
+
+/// The classifier's reason on one line, so that it cannot open a block
+/// that hides text.
+fn one_line(reason: &str) -> String {
+    reason
+        .chars()
+        .map(|c| if c.is_control() || c == '`' { ' ' } else { c })
+        .take(300)
+        .collect()
+}
+
+/// The question, exactly as `ask` posts it and `verify` expects it.
+fn question_text(
+    nick: &str,
+    tool_name: &str,
+    shown: &str,
+    blocked: Option<&str>,
+    code: &str,
+    wait: Duration,
+) -> String {
+    // A call the auto-mode classifier blocked says why.
+    let why = blocked.map_or(String::new(), |reason| {
+        format!(
+            "\nThe auto-mode classifier blocked it: {}",
+            one_line(reason)
+        )
+    });
+    format!(
+        "**@{nick}** asks to use **{tool_name}**:\n{shown}{why}\n\n\
+         {QUESTION_SENTENCE}, or reply `yes {code}` / `no {code}`. \
+         No answer within {} means deny.",
+        duration_text(wait),
+    )
 }
 
 /// The call to ask about.
@@ -193,11 +244,29 @@ pub async fn ask(
         input,
         blocked,
     } = *request;
+    let default_wait = if blocked.is_some() {
+        WAIT_BLOCKED
+    } else {
+        WAIT
+    };
     let wait = std::env::var("GONIEC_APPROVAL_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .map_or(WAIT, Duration::from_secs);
+        .map_or(default_wait, Duration::from_secs);
     let client = Client::new(site, &bot.email, &bot.api_key)?;
+    let Some(shown) = describe(tool_name, input) else {
+        let note = format!(
+            "**@{nick}** wanted to use **{tool_name}**, but the call is too long to show \
+             here in full, so it stays denied."
+        );
+        let _ = post(&client, place, trusted_user_id, &note).await;
+        return Ok(Outcome {
+            answer: Answer::Deny("the call is too long to show in the chat in full".into()),
+            message_id: 0,
+            code: String::new(),
+            wait,
+        });
+    };
     // A bot gets the reaction events of a channel only as a subscriber.
     if let Place::Topic { channel, .. } = place {
         client.subscribe(channel, "", &[bot.user_id]).await?;
@@ -205,17 +274,7 @@ pub async fn ask(
     // Register before asking, so that even an instant answer is in the queue.
     let queue = client.register_for(&["message", "reaction"]).await?;
     let code = new_code();
-    // A call the auto-mode classifier blocked says why.
-    let why = blocked.map_or(String::new(), |reason| {
-        format!("\nThe auto-mode classifier blocked it: {reason}")
-    });
-    let question = format!(
-        "**@{nick}** asks to use **{tool_name}**:\n{}{why}\n\n\
-         React ✅ to allow or ❌ to deny, or reply `yes {code}` / `no {code}`. \
-         No answer within {} means deny.",
-        describe(tool_name, input),
-        duration_text(wait),
-    );
+    let question = question_text(nick, tool_name, &shown, blocked, &code, wait);
     let message_id = post(&client, place, trusted_user_id, &question).await?;
     // Without the reactions, the typed answer still works.
     for name in [ALLOW_NAME, DENY_NAME] {
@@ -242,44 +301,51 @@ pub async fn ask(
         answer,
         message_id,
         code,
+        wait,
     })
 }
 
 /// A question to check with Zulip.
 pub struct Check<'a> {
+    pub nick: &'a str,
     pub bot_user_id: u64,
     pub trusted_user_id: u64,
     pub place: &'a Place,
     pub message_id: u64,
     pub code: &'a str,
+    /// With `blocked`, the classifier's reason the question showed.
     pub request: &'a Request<'a>,
+    /// How long the question said it would wait.
+    pub wait: Duration,
     /// An older question does not count.
     pub max_age: Duration,
 }
 
 /// Whether the trusted user approved this call in Zulip: the question was
-/// sent by this bot, in the place, not longer ago than `max_age`, and shows
-/// exactly this call and its code; and the trusted user reacted ✅ to it
-/// without ❌, or replied `yes <code>` there. Zulip authenticates who
-/// reacted and who wrote, so a session can fake none of this, not even with
-/// its bot's key: a question it posts itself is not approved until the user
-/// approves what the question shows.
+/// sent by this bot, in the place, not longer ago than `max_age`, and is
+/// exactly the question `ask` posts for this call, character for character;
+/// and the trusted user reacted ✅ to it without ❌, or replied `yes <code>`
+/// there. An exact match, not a search: a session could post a message as
+/// its bot that hides the real call (in a spoiler, say) under a harmless
+/// one. Zulip authenticates who reacted and who wrote, so a session can
+/// fake none of this, not even with its bot's key.
 pub async fn verify(client: &Client, check: &Check<'_>) -> Result<bool> {
+    let Some(shown) = describe(check.request.tool_name, check.request.input) else {
+        return Ok(false);
+    };
+    let expected = question_text(
+        check.nick,
+        check.request.tool_name,
+        &shown,
+        check.request.blocked,
+        check.code,
+        check.wait,
+    );
     let question = client.message(check.message_id).await?;
     let age = chrono::Utc::now().timestamp() - question.timestamp;
-    // The model may reword a Bash call's `description` on the retry; the
-    // call itself must be the same.
-    let mut call = check.request.input.clone();
-    if let Some(map) = call.as_object_mut() {
-        map.remove("description");
-    }
-    let shows_the_call = question
-        .content
-        .contains(&describe(check.request.tool_name, &call))
-        && question.content.contains(&format!("`yes {}`", check.code));
     if question.sender_id != check.bot_user_id
         || !in_place(&question, check.place)
-        || !shows_the_call
+        || question.content != expected
         || age < 0
         || age as u64 > check.max_age.as_secs()
     {
@@ -420,17 +486,56 @@ mod tests {
     }
 
     #[test]
-    fn descriptions() {
+    fn descriptions_show_the_whole_call() {
+        // The description is the model's own words, and not shown.
         let bash = describe(
             "Bash",
             &json!({ "command": "make deploy", "description": "Deploy" }),
         );
-        assert_eq!(bash, "```\nmake deploy\n```\nDeploy");
-        let ticks = describe("Bash", &json!({ "command": "echo ````" }));
+        assert_eq!(bash.unwrap(), "```\nmake deploy\n```");
+        let ticks = describe("Bash", &json!({ "command": "echo ````" })).unwrap();
         assert!(ticks.starts_with("`````\n"));
+        // Any other Bash field shows the whole input.
+        let sandbox = describe(
+            "Bash",
+            &json!({ "command": "ls", "dangerouslyDisableSandbox": true }),
+        )
+        .unwrap();
+        assert!(sandbox.contains("dangerouslyDisableSandbox"));
+        // A write shows what it writes, an edit both strings.
+        let write = describe(
+            "Write",
+            &json!({ "file_path": "/a/b", "content": "secret plan" }),
+        );
+        assert!(write.unwrap().contains("secret plan"));
+        let edit = describe(
+            "Edit",
+            &json!({ "file_path": "/a/b", "old_string": "x = 1", "new_string": "x = 2" }),
+        )
+        .unwrap();
+        assert!(edit.contains("x = 1") && edit.contains("x = 2"));
+        // Too long to show in full: no question at all.
+        let long = "a".repeat(MAX_SHOWN_CHARS + 1);
+        assert_eq!(describe("Bash", &json!({ "command": long })), None);
+    }
+
+    #[test]
+    fn questions_are_exact_and_one_reason_line() {
+        let shown = describe("Bash", &json!({ "command": "uname -r" })).unwrap();
+        let text = question_text(
+            "claude",
+            "Bash",
+            &shown,
+            Some("line one\n```spoiler\nhidden"),
+            "ae65",
+            WAIT_BLOCKED,
+        );
         assert_eq!(
-            describe("Edit", &json!({ "file_path": "/a/b" })),
-            "```\n/a/b\n```"
+            text,
+            "**@claude** asks to use **Bash**:\n```\nuname -r\n```\n\
+             The auto-mode classifier blocked it: line one    spoiler hidden\n\n\
+             React ✅ to allow or ❌ to deny, or reply `yes ae65` / `no ae65`. \
+             No answer within 5 minutes means deny."
         );
     }
 }
