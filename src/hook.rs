@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
+use crate::approve;
 use crate::binding;
 use crate::inbox::{self, Inbox};
 use crate::keys::Keys;
@@ -37,6 +38,11 @@ const EXIT_WAKE: i32 = 2;
 struct Input {
     #[serde(default)]
     hook_event_name: String,
+    /// For `PermissionRequest`: the tool and its input.
+    #[serde(default)]
+    tool_name: String,
+    #[serde(default)]
+    tool_input: serde_json::Value,
 }
 
 fn read_input() -> Input {
@@ -56,6 +62,57 @@ fn log(what: &str, err: &anyhow::Error) {
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(file, "{now} hook {what}: {err:#}");
     }
+}
+
+/// For `PermissionRequest` in a headless session that goniec started: ask the
+/// trusted user in Zulip. Any failure gives no decision, and Claude Code then
+/// denies the tool call, because a headless session cannot prompt.
+pub fn permission() -> i32 {
+    let input = read_input();
+    let decision = match ask_trusted_user(&input) {
+        Ok(Some(approve::Answer::Allow)) => serde_json::json!({ "behavior": "allow" }),
+        Ok(Some(approve::Answer::Deny(why))) => {
+            serde_json::json!({ "behavior": "deny", "message": format!("Not approved: {why}.") })
+        }
+        Ok(None) => return 0,
+        Err(e) => {
+            log("permission", &e);
+            return 0;
+        }
+    };
+    let output = serde_json::json!({
+        "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": decision }
+    });
+    println!("{output}");
+    0
+}
+
+fn ask_trusted_user(input: &Input) -> Result<Option<approve::Answer>> {
+    let dir = binding::session_dir()?;
+    let Some(binding) = binding::find(&dir)? else {
+        return Ok(None);
+    };
+    let keys = Keys::load()?;
+    let bot = keys.bot(&binding.nick)?;
+    if bot.user_id != binding.user_id || bot.dir.as_deref() != Some(dir.as_path()) {
+        bail!(
+            "{} does not match the key file",
+            dir.join(binding::FILE).display()
+        );
+    }
+    let Some(trusted) = keys.trusted_user_id else {
+        bail!("no trusted_user_id in the key file, so nobody can approve");
+    };
+    let runtime = tokio::runtime::Runtime::new()?;
+    let answer = runtime.block_on(approve::ask(
+        &keys.site,
+        &binding.nick,
+        bot,
+        trusted,
+        &input.tool_name,
+        &input.tool_input,
+    ))?;
+    Ok(Some(answer))
 }
 
 /// This session's nickname and inbox, if its directory is bound to a bot
@@ -84,6 +141,7 @@ pub fn run(event: Option<&str>) -> i32 {
     match event {
         Some("wait") => wait(),
         Some("context") => context(),
+        Some("permission") => permission(),
         other => {
             log("dispatch", &anyhow::anyhow!("unknown hook event {other:?}"));
             0

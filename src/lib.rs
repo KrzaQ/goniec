@@ -1,3 +1,4 @@
+pub mod approve;
 pub mod binding;
 pub mod daemon;
 pub mod hook;
