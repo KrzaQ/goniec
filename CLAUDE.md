@@ -139,14 +139,17 @@ checked 2026-10-24 for version 2.1.310). Test them before relying on them.
 - **Not used:** Monitor (rejected by the user), channels (research preview,
   needs `--dangerously-load-development-channels` with a confirmation dialog
   at every start, and claude.ai login only), Remote Control (rejected).
-- **The hook config.** `goniec hook wait` (with `"asyncRewake": true` and
-  `"timeout": 2147483`) on `SessionStart` and `Stop`, and `goniec hook context`
-  on `PostToolBatch`. Both exit 0 at once outside a bound session directory,
-  so one config can serve every session. It lives in the user's global
-  `~/.claude/settings.json`. `goniec install-hooks` adds it on each machine
-  (dotfiles' `bootstrap-goniec` runs it), and `--remove` takes it out. It
-  adds, replaces or removes only goniec's own entries (a command with
-  `goniec` and `hook wait` or `hook context`), never a whole event list, so
+- **The hook config.** Four entries: `goniec hook wait` (with
+  `"asyncRewake": true` and `"timeout": 2147483`) on `SessionStart` and
+  `Stop`, `goniec hook context` on `PostToolBatch`, and `goniec hook end` on
+  `SessionEnd`. All exit 0 at once outside a bound session directory, so one
+  config can serve every session. It lives in the user's global
+  `~/.claude/settings.json`. `goniec install-hooks` adds it on each machine,
+  and `--remove` takes it out. The user's dotfiles run it as the last step of
+  `make install-goniec-daemon`, because the hooks only work where a daemon
+  runs; `make bootstrap-goniec` does not touch `settings.json`. It adds,
+  replaces or removes only goniec's own entries (a command with `goniec` and
+  `hook wait`, `hook context` or `hook end`), never a whole event list, so
   the user's other hooks on the same events stay. claude-setup does not sync
   `hooks`, because its sync replaces whole keys. Each command
   is guarded, so it does nothing on a machine without goniec:
