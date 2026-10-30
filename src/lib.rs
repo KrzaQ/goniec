@@ -1,5 +1,6 @@
 pub mod approve;
 pub mod binding;
+pub mod config;
 pub mod daemon;
 pub mod headless;
 pub mod history;

@@ -24,6 +24,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 
+use crate::config;
 use crate::headless;
 use crate::inbox::{self, Inbox, Record};
 use crate::keys::{Bot, Keys};
@@ -66,6 +67,13 @@ struct State {
 /// A headless process running one conversation.
 struct Conversation {
     nick: String,
+    /// The directory it runs in.
+    dir: PathBuf,
+    /// `config::fingerprint` when the process started.
+    config: u64,
+    /// End the process after its current turn, for this reason: a new
+    /// configuration.
+    end_after_turn: Option<&'static str>,
     child: Child,
     stdin: Option<ChildStdin>,
     state: Arc<Mutex<State>>,
@@ -176,15 +184,18 @@ impl Responder {
             }
         }
 
-        for (id, (cdir, new)) in &wanted {
+        for (id, (cdir, _)) in &wanted {
             if !self.running.contains_key(id) {
                 if self.failed.get(id).is_some_and(|t| t.elapsed() < RETRY_GAP)
                     || self.count(nick) >= MAX_PER_BOT
                 {
                     continue;
                 }
-                let conv = spawn(keys, nick, cdir, id, *new).await?;
-                let how = if *new { "started" } else { "resumed" };
+                // A conversation that never finished a turn has no
+                // transcript to resume.
+                let new = config::transcript(id).is_none();
+                let conv = spawn(keys, nick, cdir, id, new).await?;
+                let how = if new { "started" } else { "resumed" };
                 let pid = conv.child.id().unwrap_or(0);
                 log(nick, format!("{how} conversation {id} (pid {pid})"));
                 self.running.insert(id.clone(), conv);
@@ -195,8 +206,16 @@ impl Responder {
                 .filter(|r| owned_by(&table, r, id))
                 .map(|r| age(r.timestamp))
                 .max();
-            if !conv.busy() && oldest.is_some_and(|a| a >= BATCH) {
-                feed(conv, id, &inbox, &table, keys.trusted_user_id).await?;
+            let open = conv.stdin.is_some() && conv.end_after_turn.is_none();
+            if open && !conv.busy() && oldest.is_some_and(|a| a >= BATCH) {
+                // MCP servers, plugins and the version load only at start: a
+                // process with an old configuration ends, and the next tick
+                // resumes the conversation with the new one.
+                if config::fingerprint(&conv.dir, &config::claude_path(keys)?) != conv.config {
+                    conv.end_after_turn = Some("its configuration changed");
+                } else {
+                    feed(conv, id, &inbox, &table, keys.trusted_user_id).await?;
+                }
             }
         }
 
@@ -213,11 +232,11 @@ impl Responder {
             let idle = last_turn_end.unwrap_or(conv.started).elapsed();
             let waiting = pending.iter().any(|r| owned_by(&table, r, id));
             let taken_over = interactive(id);
-            if taken_over || (idle >= IDLE_END && !waiting) {
+            if taken_over || conv.end_after_turn.is_some() || (idle >= IDLE_END && !waiting) {
                 let why = if taken_over {
                     "the user took it over"
                 } else {
-                    "idle"
+                    conv.end_after_turn.unwrap_or("idle")
                 };
                 log(nick, format!("ending conversation {id}: {why}"));
                 conv.stdin = None;
@@ -253,11 +272,8 @@ async fn spawn(
     new: bool,
 ) -> Result<Conversation> {
     let home = std::env::home_dir().ok_or_else(|| anyhow!("no home directory"))?;
-    let claude = keys
-        .claude_path
-        .clone()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/bin/claude"));
+    let claude = config::claude_path(keys)?;
+    let fingerprint = config::fingerprint(dir, &claude);
     let goniec = std::env::current_exe().context("cannot find the goniec binary")?;
     let state_dir = inbox::state_dir()?.join("headless");
     fs::create_dir_all(&state_dir)?;
@@ -322,6 +338,9 @@ async fn spawn(
     tokio::spawn(read_output(poster, stdout, state.clone()));
     Ok(Conversation {
         nick: nick.to_owned(),
+        dir: dir.to_owned(),
+        config: fingerprint,
+        end_after_turn: None,
         child,
         stdin,
         state,

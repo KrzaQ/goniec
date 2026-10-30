@@ -296,6 +296,26 @@ headless process for it ends after its turn (tested live with `@kiekert`).
   answer goes there automatically, so the model learns it at that moment.
   This happens mostly in a conversation that ran interactively before, where
   `goniec send` was the right way to answer.
+- **A new configuration.** Claude Code reads settings again while it runs,
+  but it starts MCP servers and plugins only once, and a process keeps its
+  version. The responder hashes these when it starts a process: the MCP
+  parts of `~/.claude.json` (user servers, and the project's local servers),
+  the directory's `.mcp.json`, `enabledPlugins` and the MCP switches in the
+  three settings files, the installed plugins, and the `claude` binary
+  that the link points at. Before each turn it hashes them again. When the
+  hash differs, the process ends, and the next tick resumes the
+  conversation with the new configuration. Measured on 2026-10-30 (haiku):
+  a resumed `-p` turn took 4.1 s against 1.2 s for a turn in an open
+  process, and it read the prompt cache just the same (33k tokens read, 68
+  written). Ending the process after every turn would cost those 3 s on
+  every message and kill background work that outlives a turn, so the
+  responder ends it only for a reason.
+- **A conversation starts or resumes by its transcript.** The responder
+  resumes a conversation (`--resume`) when Claude Code has its transcript
+  (`~/.claude/projects/*/<uuid>.jsonl`), and starts it with that UUID
+  (`--session-id`) otherwise. So a conversation whose transcript Claude Code
+  deleted after `cleanupPeriodDays` starts fresh instead of failing to
+  resume.
 - **`@claude`** is a bound bot like any other, with one difference: it is a
   dispatcher (`dispatch = ["claude"]` in `goniec.toml`). Every new thread of
   a dispatcher bot gets a new headless conversation, even while an
@@ -461,6 +481,8 @@ So goniec uses two kinds of key:
       session counts as online only once it has registered, which happens
       at its next turn.
    5. The `@claude` dispatcher: the `dispatch` list, built 2026-10-30.
+   6. The restart on a new configuration. Built 2026-10-30, not yet tested
+      live.
 
 ## Conventions
 
