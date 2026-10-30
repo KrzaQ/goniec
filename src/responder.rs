@@ -27,8 +27,10 @@ use tokio::process::{Child, ChildStdin, Command};
 use crate::headless;
 use crate::inbox::{self, Inbox, Record};
 use crate::keys::{Bot, Keys};
+use crate::send::{self, Target};
 use crate::sessions::{self, Entry};
 use crate::threads::{self, Owner, Table};
+use crate::zulip::Client;
 
 /// Collect messages for this long before a turn, so that a burst of lines
 /// becomes one turn.
@@ -309,7 +311,13 @@ async fn spawn(
     let stdin = child.stdin.take();
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
     let state = Arc::new(Mutex::new(State::default()));
-    tokio::spawn(read_output(nick.to_owned(), stdout, state.clone()));
+    let bot = keys.bot(nick)?;
+    let poster = Poster {
+        nick: nick.to_owned(),
+        client: Client::new(&keys.site, &bot.email, &bot.api_key)?,
+        reply_file: reply_file.clone(),
+    };
+    tokio::spawn(read_output(poster, stdout, state.clone()));
     Ok(Conversation {
         nick: nick.to_owned(),
         child,
@@ -321,20 +329,101 @@ async fn spawn(
     })
 }
 
-/// Follow the process's stream-json output: a `result` event ends a turn.
-async fn read_output(nick: String, stdout: tokio::process::ChildStdout, state: Arc<Mutex<State>>) {
+/// Posts a conversation's answers to its thread, as the bot.
+struct Poster {
+    nick: String,
+    client: Client,
+    /// Names the thread of the current turn; `feed` writes it.
+    reply_file: PathBuf,
+}
+
+/// Zulip refuses longer messages.
+const MAX_MESSAGE_CHARS: usize = 9_000;
+
+impl Poster {
+    /// Post `text` to `target`, split at line ends where it is too long.
+    async fn post(&self, target: &str, text: &str) -> Result<()> {
+        for chunk in chunks(text, MAX_MESSAGE_CHARS) {
+            match send::parse_target(target)? {
+                Target::Channel { channel, topic } => {
+                    self.client
+                        .send_to_channel(&channel, &topic, &chunk)
+                        .await?;
+                }
+                Target::UserId(id) => {
+                    self.client.send_direct(id, &chunk).await?;
+                }
+                Target::User(name) => anyhow::bail!("unexpected reply target @{name}"),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Split `text` into pieces of at most `max` characters, at line ends where
+/// possible.
+fn chunks(text: &str, max: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for line in text.split_inclusive('\n') {
+        if current.chars().count() + line.chars().count() > max && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        let mut line = line;
+        while line.chars().count() > max {
+            let cut = line.char_indices().nth(max).map_or(line.len(), |(i, _)| i);
+            out.push(line[..cut].to_owned());
+            line = &line[cut..];
+        }
+        current.push_str(line);
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// Follow the process's stream-json output. A `result` event ends a turn,
+/// and its text is the answer, which goes to the turn's thread.
+async fn read_output(
+    poster: Poster,
+    stdout: tokio::process::ChildStdout,
+    state: Arc<Mutex<State>>,
+) {
+    let nick = poster.nick.clone();
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
-        if event["type"] == "result" {
-            let subtype = event["subtype"].as_str().unwrap_or("?");
-            log(&nick, format!("turn done ({subtype})"));
+        if event["type"] != "result" {
+            continue;
+        }
+        let subtype = event["subtype"].as_str().unwrap_or("?").to_owned();
+        let failed = subtype != "success" || event["is_error"].as_bool().unwrap_or(false);
+        let text = if failed {
+            format!("⚠ The turn ended with an error ({subtype}).")
+        } else {
+            event["result"].as_str().unwrap_or("").trim().to_owned()
+        };
+        // Read the thread before the turn counts as done: the next turn may
+        // rewrite the file.
+        let target = fs::read_to_string(&poster.reply_file).map(|t| t.trim().to_owned());
+        {
             let mut s = state.lock().unwrap();
             s.busy = false;
             s.turns += 1;
             s.last_turn_end = Some(Instant::now());
+        }
+        log(&nick, format!("turn done ({subtype})"));
+        match (target, text.is_empty()) {
+            (_, true) => {}
+            (Ok(target), false) => {
+                if let Err(e) = poster.post(&target, &text).await {
+                    log(&nick, format!("cannot post the answer: {e:#}"));
+                }
+            }
+            (Err(e), false) => log(&nick, format!("no thread for the answer: {e}")),
         }
     }
     state.lock().unwrap().exited = true;
@@ -368,7 +457,7 @@ async fn feed(
     if let Some(to) = reply_to {
         fs::write(&conv.reply_file, to)?;
     }
-    let prompt = headless::prompt(&conv.nick, &instructions, others.len());
+    let prompt = headless::prompt(&instructions, others.len());
     let line = serde_json::json!({
         "type": "user",
         "message": { "role": "user", "content": prompt },
@@ -389,4 +478,17 @@ async fn feed(
         ),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splitting() {
+        assert_eq!(chunks("short", 10), ["short"]);
+        assert_eq!(chunks("aaaa\nbbbb\ncccc", 10), ["aaaa\nbbbb\n", "cccc"]);
+        assert_eq!(chunks("abcdefghij12", 5), ["abcde", "fghij", "12"]);
+        assert!(chunks("  \n", 10).is_empty());
+    }
 }

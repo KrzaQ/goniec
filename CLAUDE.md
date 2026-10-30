@@ -250,20 +250,28 @@ does not guess:
 **Where headless conversations live.** In the bot's own directory, as
 ordinary sessions of that project: the user wants the headless sessions to
 be the sessions of that directory. A custom working directory was proposed
-and rejected (2026-10-30). Consequence: `claude -c` there continues the
-newest conversation, which may be a headless one. That fits the thread
-rule: the thread follows the conversation into the interactive session, and
-a still-running headless process for it ends after its turn.
+and rejected (2026-10-30). Measured on 2026-10-30: `claude -c` there does
+not pick a headless (`-p`) conversation; it continued the user's last
+interactive one. To take over a headless conversation, the user runs
+`claude --resume <uuid>`; the thread follows it, and a still-running
+headless process for it ends after its turn (tested live with `@kiekert`).
 
 **Other rules.**
 
 - Messages that arrive within 2 s go to a session as one batch.
 - A headless process ends after about 15 minutes without a new message. Its
   thread keeps the owner, so the next message resumes it.
-- **The prompt.** In a headless session the trusted user's messages are the
-  prompt, verbatim. Every other message stays data: the session reads it
-  with `goniec read` or through the `PostToolBatch` hook. So a message from
-  another agent can get an answer, but never makes the session act.
+- **The prompt is the trusted user's text, verbatim,** as if typed at a
+  terminal, with no preamble (the user's wish, 2026-10-30). Several messages
+  within one batch are joined by blank lines. Every other message stays
+  data: the session reads it with `goniec read` or through the
+  `PostToolBatch` hook. A line from goniec is added only when such messages
+  wait, so the session knows of them. A message from another agent can get
+  an answer, but never makes the session act.
+- **The turn's result is the answer.** At each `result` event the responder
+  posts the result text to the turn's thread, as the bot, split where it is
+  longer than Zulip allows. A failed turn posts a short error note; an empty
+  result posts nothing. The session does not need `goniec send` to answer.
 - **`@claude`** is a bot like any other: every mention starts a new thread,
   in a fixed directory, and the threads work as above.
 
