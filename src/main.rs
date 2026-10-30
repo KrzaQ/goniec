@@ -92,7 +92,14 @@ async fn run(cli: Cli) -> Result<()> {
             if id.dir.is_none() {
                 bail!("read for @guest is not built yet; only a bound session has an inbox");
             }
-            let records = Inbox::open(&id.nick)?.take()?;
+            let inbox = Inbox::open(&id.nick)?;
+            // In a headless session the trusted user's messages are the
+            // responder's prompt, not data to read.
+            let records = if goniec::headless::active() {
+                inbox.take_where(|r| !goniec::headless::is_instruction(r, keys.trusted_user_id))?
+            } else {
+                inbox.take()?
+            };
             if !records.is_empty() {
                 print!("{}", inbox::format(&id.nick, &records));
             }

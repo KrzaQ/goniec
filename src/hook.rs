@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::approve;
 use crate::binding;
+use crate::headless;
 use crate::inbox::{self, Inbox};
 use crate::keys::Keys;
 
@@ -119,7 +120,7 @@ fn ask_trusted_user(input: &Input) -> Result<Option<approve::Answer>> {
 /// This session's nickname and inbox, if its directory is bound to a bot
 /// whose key this host holds. The check is local; the daemon has already
 /// checked the key with Zulip.
-fn session_inbox() -> Result<Option<(String, Inbox)>> {
+fn session_inbox() -> Result<Option<(String, Inbox, Option<u64>)>> {
     let dir = binding::session_dir()?;
     let Some(binding) = binding::find(&dir)? else {
         return Ok(None);
@@ -132,7 +133,11 @@ fn session_inbox() -> Result<Option<(String, Inbox)>> {
             dir.join(binding::FILE).display()
         );
     }
-    Ok(Some((binding.nick.clone(), Inbox::open(&binding.nick)?)))
+    Ok(Some((
+        binding.nick.clone(),
+        Inbox::open(&binding.nick)?,
+        keys.trusted_user_id,
+    )))
 }
 
 /// Run `goniec hook <event>`. This runs before clap parses anything, because
@@ -154,7 +159,12 @@ pub fn run(event: Option<&str>) -> i32 {
 pub fn context() -> i32 {
     let input = read_input();
     let text = match session_inbox().and_then(|found| match found {
-        Some((nick, inbox)) => inbox.take_fitting(&nick, MAX_CHARS),
+        // In a headless session the trusted user's messages are the
+        // responder's prompt, so the hook leaves them alone.
+        Some((nick, inbox, trusted)) if headless::active() => {
+            inbox.take_fitting_where(&nick, MAX_CHARS, |r| !headless::is_instruction(r, trusted))
+        }
+        Some((nick, inbox, _)) => inbox.take_fitting(&nick, MAX_CHARS),
         None => Ok(None),
     }) {
         Ok(Some(text)) => text,
@@ -193,7 +203,11 @@ pub fn wait() -> i32 {
 }
 
 fn wait_for_messages() -> Result<Option<String>> {
-    let Some((nick, inbox)) = session_inbox()? else {
+    // A headless session gets its turns from the responder, not from a wake.
+    if headless::active() {
+        return Ok(None);
+    }
+    let Some((nick, inbox, _)) = session_inbox()? else {
         return Ok(None);
     };
     // One watcher per nickname. A second one, from the next Stop while the

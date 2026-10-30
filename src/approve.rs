@@ -39,12 +39,16 @@ pub enum Place {
 }
 
 impl Place {
-    /// From `GONIEC_REPLY_TO`, which goniec sets when it starts a headless
-    /// session: `#channel>topic` for a topic, anything else for a direct
-    /// message to the trusted user.
+    /// From the file named by `GONIEC_REPLY_TO_FILE`, which the responder
+    /// rewrites before each turn of a headless session, else from
+    /// `GONIEC_REPLY_TO`: `#channel>topic` for a topic, anything else for a
+    /// direct message to the trusted user.
     pub fn from_env() -> Self {
-        match std::env::var("GONIEC_REPLY_TO")
-            .ok()
+        let from_file = std::env::var_os("GONIEC_REPLY_TO_FILE")
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| text.trim().to_owned());
+        match from_file
+            .or_else(|| std::env::var("GONIEC_REPLY_TO").ok())
             .and_then(|to| crate::send::parse_target(&to).ok())
         {
             Some(crate::send::Target::Channel { channel, topic }) => {

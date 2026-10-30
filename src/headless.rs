@@ -10,6 +10,12 @@ use std::fmt::Write as _;
 
 use crate::inbox::{Record, reply_target, shell_quote};
 
+/// This process runs inside a headless session that goniec started. The
+/// responder sets `GONIEC_HEADLESS=1` in the session's environment.
+pub fn active() -> bool {
+    std::env::var_os("GONIEC_HEADLESS").is_some_and(|v| v == "1")
+}
+
 /// The message is the trusted user's instruction: its sender is the trusted
 /// user, and Zulip marks the sender as human. The daemon records an unknown
 /// sender as a bot, so an unknown sender never counts.
