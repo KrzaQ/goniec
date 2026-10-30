@@ -80,6 +80,16 @@ pub fn prompt(instructions: &[Record], others_waiting: usize) -> String {
     parts.join("\n\n")
 }
 
+/// The line that tells a headless session where the user writes from. It
+/// starts a turn whose thread differs from the previous turn's, so a
+/// session can keep what it learns apart by channel.
+pub fn thread_line(r: &Record) -> String {
+    match (&r.channel, &r.topic) {
+        (Some(_), Some(_)) => format!("[goniec] In {}:", crate::inbox::place(r)),
+        _ => "[goniec] In a direct message:".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

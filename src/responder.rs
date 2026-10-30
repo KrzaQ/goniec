@@ -83,6 +83,9 @@ struct Conversation {
     /// The newest message the conversation was told about. Messages from
     /// others that it left unread do not start another turn.
     fed_up_to: u64,
+    /// The thread of the previous turn. A turn from another thread starts
+    /// with a line that names it.
+    last_thread: Option<String>,
 }
 
 impl Conversation {
@@ -594,6 +597,7 @@ async fn spawn(
         started: Instant::now(),
         reply_file,
         fed_up_to: 0,
+        last_thread: None,
     })
 }
 
@@ -727,7 +731,13 @@ async fn feed(
     if let Some(to) = reply_to {
         fs::write(&conv.reply_file, to)?;
     }
-    let prompt = headless::prompt(&instructions, others.len());
+    let mut prompt = headless::prompt(&instructions, others.len());
+    if let Some(first) = instructions.last().or(others.last())
+        && conv.last_thread.as_deref() != Some(threads::key(first).as_str())
+    {
+        prompt = format!("{}\n{prompt}", headless::thread_line(first));
+        conv.last_thread = Some(threads::key(first));
+    }
     let line = serde_json::json!({
         "type": "user",
         "message": { "role": "user", "content": prompt },

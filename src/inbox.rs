@@ -269,11 +269,7 @@ pub fn format(nick: &str, records: &[Record]) -> String {
          without pipes or redirections: the user allows goniec only in that form."
     );
     for r in records {
-        let place = match (&r.channel, &r.topic) {
-            (Some(channel), Some(topic)) => format!("#{channel} > {topic}"),
-            (Some(channel), None) => format!("#{channel}"),
-            _ => "direct".to_owned(),
-        };
+        let place = place(r);
         let kind = if r.sender_is_bot { "bot" } else { "human" };
         let _ = writeln!(
             out,
@@ -295,6 +291,15 @@ pub fn format(nick: &str, records: &[Record]) -> String {
         }
     }
     out
+}
+
+/// Where a message was written: `#channel > topic`, or `direct`.
+pub fn place(r: &Record) -> String {
+    match (&r.channel, &r.topic) {
+        (Some(channel), Some(topic)) => format!("#{channel} > {topic}"),
+        (Some(channel), None) => format!("#{channel}"),
+        _ => "direct".to_owned(),
+    }
 }
 
 /// A message time in local time, for the agent.

@@ -286,6 +286,13 @@ headless process for it ends after its turn (tested live with `@kiekert`).
   `PostToolBatch` hook. A line from goniec is added only when such messages
   wait, so the session knows of them. A message from another agent can get
   an answer, but never makes the session act.
+- **A headless turn names its thread.** A line `[goniec] In #channel >
+  topic:` (or `In a direct message:`) starts the first turn, and every turn
+  whose thread differs from the previous one. The user wants `@claude` to
+  keep what it learns apart by channel (2026-10-30), and the verbatim
+  prompt did not say where it came from. Measured on 2026-10-30: a `-p`
+  session writes Claude Code's auto memory without asking, so `@claude`
+  keeps its notes per channel in its project's memory.
 - **The turn's result is the answer.** At each `result` event the responder
   posts the result text to the turn's thread, as the bot, split where it is
   longer than Zulip allows. A failed turn posts a short error note; an empty
