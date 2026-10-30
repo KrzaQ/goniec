@@ -43,8 +43,19 @@ const BATCH: Duration = Duration::from_secs(2);
 /// their owner, so the next message resumes it.
 const IDLE_END: Duration = Duration::from_secs(15 * 60);
 
-/// At most this many headless processes per bot at a time.
+/// At most this many headless processes per bot at a time; a dispatcher
+/// bot, which starts a conversation for every new thread, gets more. A
+/// conversation over the limit evicts the one idle the longest.
 const MAX_PER_BOT: usize = 3;
+const MAX_PER_DISPATCHER: usize = 5;
+
+fn limit(keys: &Keys, nick: &str) -> usize {
+    if keys.dispatches(nick) {
+        MAX_PER_DISPATCHER
+    } else {
+        MAX_PER_BOT
+    }
+}
 
 /// After a process that ended without finishing a turn, wait this long
 /// before starting that conversation again.
@@ -174,9 +185,11 @@ impl Responder {
         }
         // Each new thread gets a new conversation, which owns it from before
         // its start. A session may claim the thread in the meantime.
+        // At most a limit's worth of new conversations per tick; they make
+        // room for themselves by evicting older ones.
         for records in unowned.values() {
             let new_ones = wanted.values().filter(|(_, new)| *new).count();
-            if self.count(nick) + new_ones >= MAX_PER_BOT {
+            if new_ones >= limit(keys, nick) {
                 break;
             }
             let id = uuid::Uuid::new_v4().to_string();
@@ -193,9 +206,11 @@ impl Responder {
 
         for (id, (cdir, _)) in &wanted {
             if !self.running.contains_key(id) {
-                if self.failed.get(id).is_some_and(|t| t.elapsed() < RETRY_GAP)
-                    || self.count(nick) >= MAX_PER_BOT
-                {
+                if self.failed.get(id).is_some_and(|t| t.elapsed() < RETRY_GAP) {
+                    continue;
+                }
+                if self.count(nick) >= limit(keys, nick) {
+                    self.make_room(nick, &pending, &table);
                     continue;
                 }
                 // A conversation that never finished a turn has no
@@ -496,6 +511,31 @@ impl Responder {
             "- interactive sessions of @{nick} online: {online}"
         ));
         out
+    }
+
+    /// End the bot's process that has waited longest since its last turn,
+    /// after that turn, so a conversation over the limit can start. Its
+    /// threads keep their owner, so its next message resumes it. A process
+    /// with messages waiting for it stays, and nothing is evicted while
+    /// another eviction of the bot is under way.
+    fn make_room(&mut self, nick: &str, pending: &[Record], table: &Table) {
+        let mine = || self.running.iter().filter(|(_, c)| c.nick == nick);
+        if mine().any(|(_, c)| c.end_after_turn.is_some() || c.stdin.is_none()) {
+            return;
+        }
+        let victim = mine()
+            .filter(|(id, _)| !pending.iter().any(|r| owned_by(table, r, id)))
+            .min_by_key(|(_, c)| {
+                let state = c.state.lock().unwrap();
+                (state.busy, state.last_turn_end.unwrap_or(c.started))
+            })
+            .map(|(id, _)| id.clone());
+        if let Some(id) = victim {
+            log(nick, format!("evicting conversation {id} for a newer one"));
+            if let Some(conv) = self.running.get_mut(&id) {
+                conv.end_after_turn = Some("evicted for a newer conversation");
+            }
+        }
     }
 
     fn count(&self, nick: &str) -> usize {

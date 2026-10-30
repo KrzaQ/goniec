@@ -313,6 +313,12 @@ headless process for it ends after its turn (tested live with `@kiekert`).
 - Messages that arrive within 2 s go to a session as one batch.
 - A headless process ends after about 15 minutes without a new message. Its
   thread keeps the owner, so the next message resumes it.
+- **At most 3 headless processes per bot, 5 for a dispatcher** (`@claude`),
+  the user's numbers (2026-10-30). A conversation over the limit does not
+  wait: it evicts the bot's process that has waited longest since its last
+  turn, after that turn. The evicted conversation keeps its threads, so its
+  next message resumes it. A process with messages waiting for it is not
+  evicted.
 - **The prompt is the trusted user's text, verbatim,** as if typed at a
   terminal, with no preamble (the user's wish, 2026-10-30). Several messages
   within one batch are joined by blank lines. Every other message stays
@@ -541,7 +547,8 @@ So goniec uses two kinds of key:
       ownerless threads and claim them; the responder resumes an owner that
       is live nowhere, starts a new conversation (`--session-id`) for an
       ownerless thread when no interactive session of the bot is online,
-      at most 3 per bot, and ends a process after 15 minutes of quiet or
+      evicting the longest-idle process over the limit (3, or 5 for a
+      dispatcher), and ends a process after 15 minutes of quiet or
       when the user takes the conversation over. `responder = ["nick", …]`
       or `["*"]` in `goniec.toml` turns it on per bot. An interactive
       session counts as online only once it has registered, which happens
