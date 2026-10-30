@@ -96,18 +96,30 @@ impl Inbox {
 
     /// Take every new message, oldest first.
     pub fn take(&self) -> Result<Vec<Record>> {
+        self.take_where(|_| true)
+    }
+
+    /// Take the new messages that `wanted` accepts, oldest first, and leave
+    /// the others in `new/`.
+    pub fn take_where(&self, wanted: impl Fn(&Record) -> bool) -> Result<Vec<Record>> {
         let mut records = Vec::new();
         for id in self.ids(NEW)? {
             let name = file_name(id);
-            let delivered = self.root.join(DELIVERED).join(&name);
-            match fs::rename(self.root.join(NEW).join(&name), &delivered) {
-                Ok(()) => {}
+            let new = self.root.join(NEW).join(&name);
+            let record: Record = match fs::read(&new) {
+                Ok(bytes) => serde_json::from_slice(&bytes).context("bad message file")?,
                 // Another reader took it first.
                 Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                Err(e) => return Err(e).context("cannot read a message"),
+            };
+            if !wanted(&record) {
+                continue;
+            }
+            match fs::rename(&new, self.root.join(DELIVERED).join(&name)) {
+                Ok(()) => records.push(record),
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
                 Err(e) => return Err(e).context("cannot take a message"),
             }
-            let bytes = fs::read(&delivered)?;
-            records.push(serde_json::from_slice(&bytes).context("bad message file")?);
         }
         Ok(records)
     }
@@ -253,7 +265,7 @@ pub fn format(nick: &str, records: &[Record]) -> String {
 }
 
 /// Where an answer to this message goes: the same topic, or the sender.
-fn reply_target(r: &Record) -> String {
+pub fn reply_target(r: &Record) -> String {
     match (&r.channel, &r.topic) {
         (Some(channel), Some(topic)) => format!("#{channel}>{topic}"),
         // A full name is not unique; the user ID is.
@@ -262,7 +274,7 @@ fn reply_target(r: &Record) -> String {
 }
 
 /// Quote for a POSIX shell, so a topic with spaces or quotes stays one word.
-fn shell_quote(text: &str) -> String {
+pub fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
@@ -310,6 +322,21 @@ mod tests {
         assert_eq!(inbox.delivered().unwrap(), [3, 17]);
         inbox.forget(&[3, 17]).unwrap();
         assert!(inbox.delivered().unwrap().is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn take_where_leaves_the_rest() {
+        let (root, inbox) = temp_inbox("where");
+        for id in 1..=3 {
+            let mut r = record(id);
+            r.sender_id = if id == 2 { 8 } else { 30 };
+            inbox.put(&r).unwrap();
+        }
+        let taken = inbox.take_where(|r| r.sender_id == 8).unwrap();
+        assert_eq!(taken.iter().map(|r| r.id).collect::<Vec<_>>(), [2]);
+        assert_eq!(inbox.pending().unwrap(), 2);
+        assert_eq!(inbox.take().unwrap().len(), 2);
         fs::remove_dir_all(&root).unwrap();
     }
 
