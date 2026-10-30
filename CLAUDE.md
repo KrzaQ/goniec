@@ -113,26 +113,32 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
   also has a `thread:` line: `goniec read '<thread>'` prints the thread's
   latest messages from Zulip (`-n`, `--before <id>`), read-only. It works
   for `@guest` too.
-- **Files.** A message links an upload as `[name](/user_uploads/…)`. The
-  daemon saves every linked file, of the message and of its attached
-  earlier messages, under `<state>/uploads/<message id>/`, at most 25 MB
-  each. A bot downloads with `GET /user_uploads/…`, which answers with a
-  temporary URL. The notice shows a `file:` line per file; the agent reads
-  it with its Read tool. A headless prompt also carries each image (PNG,
-  JPEG, GIF, WebP, at most 3.75 MB, the API's 5 MB of base64) as an image
-  block, so the model sees it at once (tested 2026-10-30), and its
-  allowlist includes reading the uploads directory. `goniec read <thread>`
-  saves the files of the messages it prints. The daemon removes saved and
-  outgoing files after 30 days.
+- **Files.** A message links an upload as `[name](/user_uploads/…)`. When
+  goniec hands messages to a session, it saves their files, and those of
+  the attached earlier messages, in that session's own temp directory:
+  `<tmp>/claude-<uid>/<project dir, non-alphanumerics as "-">/<session
+  id>/goniec/<message id>-<n>-<name>`, at most 25 MB each. The user wanted
+  them there, not on persistent storage (2026-10-30): Zulip keeps the
+  originals, `/tmp` is tmpfs here, and screenshots can hold customer data.
+  Measured on 2026-10-30: Claude Code creates that directory for every
+  session, also in `-p` mode, and lets the session read files there
+  without asking, with no allow rule. The path follows from the message,
+  so the notice names the file, and the consumer (the hooks, `goniec read`,
+  the responder) saves it right after taking the message; a failure adds a
+  line to the text. A bot downloads with `GET /user_uploads/…`, which
+  answers with a temporary URL. A headless prompt also carries each image
+  of the user's messages (PNG, JPEG, GIF, WebP, at most 3.75 MB, the API's
+  5 MB of base64) as an image block, so the model sees it at once (tested
+  2026-10-30).
 - **`goniec send --attach <file>`** uploads files and links them. It takes
-  only files under the session directory or goniec's own
-  `<state>/outgoing/`, after following links. `Bash(goniec send *)` runs
-  without asking, so without this limit a chat message could talk an agent
-  into posting any file the user can read, keys included. Not `/tmp`: it
-  holds every Claude session's scratchpad and task output (the dotfiles
-  session's review, 2026-10-30). A file from elsewhere has to be copied
-  there first, and that copy goes through the normal permission check. A
-  headless session may write into `outgoing/` without asking.
+  only files under the session directory or the session's own temp
+  directory (its scratchpad is there), after following links.
+  `Bash(goniec send *)` runs without asking, so without this limit a chat
+  message could talk an agent into posting any file the user can read,
+  keys included. Not all of `/tmp`: it holds every Claude session's
+  scratchpad and task output (the dotfiles session's review, 2026-10-30).
+  A file from elsewhere has to be copied there first, and that copy goes
+  through the normal permission check.
 - **Commands in a notice run exactly as shown.** The user's allow rules are
   `Bash(goniec send *)` and `Bash(goniec read *)`. A pipe or a redirection
   after them (`goniec send … 2>&1 | tail`) no longer matches, and auto mode

@@ -17,7 +17,6 @@ use crate::history;
 use crate::inbox::{self, Inbox};
 use crate::keys::{self, Bot, Keys};
 use crate::responder::Responder;
-use crate::uploads;
 use crate::zulip::{self, Client, Message};
 
 /// How often the daemon looks for changes in the key file, and for
@@ -29,9 +28,6 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// How often the daemon checks every binding again, even if the key file
 /// did not change.
 const RECHECK: Duration = Duration::from_secs(60);
-
-/// How often the daemon removes old saved and outgoing files.
-const PRUNE: Duration = Duration::from_secs(3600);
 
 /// Flags that mean a message mentions the bot.
 const MENTION_FLAGS: &[&str] = &[
@@ -75,8 +71,6 @@ pub async fn run() -> Result<()> {
     let mut running: HashMap<String, Running> = HashMap::new();
     let mut seen_mtime: Option<SystemTime> = None;
     let mut last_reload = Instant::now();
-    // The first prune runs a minute after the start.
-    let mut next_prune = Instant::now() + RECHECK;
     let mut keys: Option<Keys> = None;
     let mut responder = Responder::default();
     let (orders, mut received) = unbounded_channel::<Order>();
@@ -100,14 +94,6 @@ pub async fn run() -> Result<()> {
                 responder.command(keys, order).await;
             }
             responder.tick(keys, &bound_bots(keys)).await;
-        }
-        if Instant::now() >= next_prune {
-            next_prune = Instant::now() + PRUNE;
-            match uploads::prune(uploads::KEEP) {
-                Ok(0) => {}
-                Ok(n) => eprintln!("goniec daemon: removed {n} old saved or outgoing file(s)"),
-                Err(e) => eprintln!("goniec daemon: cannot remove old files: {e:#}"),
-            }
         }
         tokio::time::sleep(TICK).await;
     }
@@ -374,17 +360,6 @@ impl Listener {
                     format!("cannot fetch the messages before {}: {e:#}", record.id),
                 ),
             }
-        }
-        // Save linked files, so the agent can read them.
-        let mut errors = uploads::fetch(&self.client, &mut record).await;
-        for earlier in &mut record.earlier {
-            errors.extend(uploads::fetch(&self.client, earlier).await);
-        }
-        for e in errors {
-            log(
-                &self.nick,
-                format!("cannot save a file of message {}: {e}", record.id),
-            );
         }
         if self.inbox.put(&record)? {
             log(&self.nick, format!("message {} in the inbox", record.id));

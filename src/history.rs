@@ -102,10 +102,12 @@ pub async fn read(
     let is_bot = users.iter().map(|u| (u.user_id, u.is_bot)).collect();
     let narrow = narrow_for(&target, |name| Ok(resolve(&users, name)?.user_id))?;
     let mut records = fetch(&client, &narrow, before, count, &is_bot).await?;
-    for record in &mut records {
-        for e in crate::uploads::fetch(&client, record).await {
-            eprintln!("goniec: cannot save a file of message {}: {e}", record.id);
-        }
+    // Files go to the calling session's temp directory. Outside a Claude
+    // Code session the links in the text are all there is.
+    let mut errors = Vec::new();
+    if let Some((files, _)) = crate::uploads::current_session(session_dir) {
+        crate::uploads::assign(&mut records, &files);
+        errors = crate::uploads::save_all(&client, &records, &files).await;
     }
     // The canonical form, so `earlier:` names the thread the same way
     // whichever form the caller used.
@@ -114,7 +116,11 @@ pub async fn read(
         Target::UserId(id) => format!("user:{id}"),
         Target::User(name) => format!("user:{}", resolve(&users, name)?.user_id),
     };
-    Ok(format(&thread, &records, count))
+    let mut text = format(&thread, &records, count);
+    for error in errors {
+        text.push_str(&format!("{error}\n"));
+    }
+    Ok(text)
 }
 
 /// The text without its mentions (`@**name**`, `@_**name**` for a silent

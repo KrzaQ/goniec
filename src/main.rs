@@ -25,7 +25,7 @@ enum Command {
         /// The message text; `-` or nothing reads it from stdin
         text: Option<String>,
         /// Upload a file and link it in the message (repeatable). Only files
-        /// under the session directory or ~/.local/state/goniec/outgoing
+        /// under the session directory or the session's own temp directory
         #[arg(long, value_name = "FILE")]
         attach: Vec<PathBuf>,
     },
@@ -157,8 +157,19 @@ async fn run(cli: Cli) -> Result<()> {
                 };
                 threads::claim(&id.nick, &records, &owner)?;
             }
+            let mut records = records;
+            let mut errors = Vec::new();
+            if let Some((files, _)) = goniec::uploads::current_session(&binding::session_dir()?) {
+                goniec::uploads::assign(&mut records, &files);
+                let client =
+                    goniec::zulip::Client::new(&keys.site, &id.bot.email, &id.bot.api_key)?;
+                errors = goniec::uploads::save_all(&client, &records, &files).await;
+            }
             if !records.is_empty() {
                 print!("{}", inbox::format(&id.nick, &records));
+            }
+            for error in errors {
+                println!("{error}");
             }
             Ok(())
         }

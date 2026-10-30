@@ -71,6 +71,8 @@ struct Conversation {
     nick: String,
     /// The directory it runs in.
     dir: PathBuf,
+    /// The bot's client, to save the files of the user's messages.
+    files_client: Client,
     /// `config::fingerprint` when the process started.
     config: u64,
     /// End the process after its current turn, for this reason: `!restart`,
@@ -560,11 +562,7 @@ async fn spawn(
             "stream-json",
             "--verbose",
             "--allowedTools",
-            &format!(
-                "Bash(goniec send *),Bash(goniec read *),Read(/{}/**),Edit(/{}/**)",
-                uploads::dir()?.display(),
-                uploads::outgoing_dir()?.display()
-            ),
+            "Bash(goniec send *),Bash(goniec read *)",
             which,
             session_id,
             "--settings",
@@ -594,6 +592,7 @@ async fn spawn(
     Ok(Conversation {
         nick: nick.to_owned(),
         dir: dir.to_owned(),
+        files_client: Client::new(&keys.site, &bot.email, &bot.api_key)?,
         config: fingerprint,
         end_after_turn: None,
         child,
@@ -736,7 +735,16 @@ async fn feed(
     if let Some(to) = reply_to {
         fs::write(&conv.reply_file, to)?;
     }
+    // The files of the user's messages go to the conversation's own temp
+    // directory, and their images into the prompt.
+    let mut instructions = instructions;
+    let files = uploads::files_dir(&conv.dir, id);
+    uploads::assign(&mut instructions, &files);
+    let errors = uploads::save_all(&conv.files_client, &instructions, &files).await;
     let mut prompt = headless::prompt(&instructions, others.len());
+    for error in errors {
+        prompt.push_str(&format!("\n{error}"));
+    }
     if let Some(first) = instructions.last().or(others.last())
         && conv.last_thread.as_deref() != Some(threads::key(first).as_str())
     {

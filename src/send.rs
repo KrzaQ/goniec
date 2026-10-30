@@ -94,9 +94,10 @@ pub async fn send(
     if text.trim().is_empty() && attach.is_empty() {
         bail!("the message is empty");
     }
-    let outgoing = uploads::outgoing_dir()?;
-    std::fs::create_dir_all(&outgoing)?;
-    let roots = [session_dir.to_owned(), outgoing];
+    // The session directory, and the session's own temp directory, where
+    // its scratchpad is.
+    let mut roots = vec![session_dir.to_owned()];
+    roots.extend(uploads::current_session(session_dir).map(|(_, tmp)| tmp));
     let files = attach
         .iter()
         .map(|f| uploads::check_attachment(f, &roots))

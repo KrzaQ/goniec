@@ -20,6 +20,7 @@ use crate::keys::Keys;
 use crate::process::Owner;
 use crate::sessions;
 use crate::threads;
+use crate::uploads;
 
 /// Claude Code takes at most 10,000 characters of hook output.
 const MAX_CHARS: usize = 9_000;
@@ -98,9 +99,21 @@ fn take_mine(
     let table = threads::load(nick)?;
     let mine =
         |r: &Record| threads::may_take(&table, r, session_id(session), bot.unowned) && extra(r);
-    let Some((text, taken)) = bot.inbox.take_fitting_where(nick, MAX_CHARS, mine)? else {
+    // Files go to this session's own temp directory, which it may read
+    // without asking. Without a session ID there is none.
+    let dir = session_id(session)
+        .map(|id| uploads::files_dir(&binding::session_dir().unwrap_or_default(), id));
+    let Some((mut text, taken)) =
+        bot.inbox
+            .take_fitting_where(nick, MAX_CHARS, dir.as_deref(), mine)?
+    else {
         return Ok(None);
     };
+    if let Some(dir) = &dir {
+        for error in uploads::save_all_blocking(&bot.keys, nick, &taken, dir) {
+            text.push_str(&format!("{error}\n"));
+        }
+    }
     if let Some(id) = session_id(session) {
         let owner = threads::Owner {
             session_id: id.to_owned(),
@@ -198,6 +211,7 @@ fn ask_trusted_user(input: &Input) -> Result<Option<approve::Answer>> {
 /// The bot a bound session speaks as, with what its hooks need.
 struct SessionBot {
     nick: String,
+    keys: Keys,
     inbox: Inbox,
     trusted_user_id: Option<u64>,
     /// The session may take messages of threads without an owner. Not for
@@ -223,6 +237,7 @@ fn session_inbox() -> Result<Option<SessionBot>> {
         trusted_user_id: keys.trusted_user_id,
         unowned: !keys.dispatches(&binding.nick),
         nick: binding.nick,
+        keys,
     }))
 }
 
