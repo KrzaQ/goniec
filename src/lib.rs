@@ -1,6 +1,7 @@
 pub mod approve;
 pub mod binding;
 pub mod daemon;
+pub mod headless;
 pub mod hook;
 pub mod inbox;
 pub mod install;

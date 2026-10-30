@@ -360,7 +360,10 @@ So goniec uses two kinds of key:
 7. The MCP server, built on the CLI library.
 8. Headless sessions (see *Headless sessions*), in this order:
    1. ~~The permission hook with approvals through Zulip.~~ Done.
-   2. The trusted user's messages as instructions in headless sessions.
+   2. ~~The trusted user's messages as instructions in headless sessions.~~
+      Done (`headless.rs`): the responder takes only the trusted user's
+      messages from the inbox (`take_where`) and makes them the prompt,
+      verbatim. Every other message stays in the inbox as data.
    3. The responder for offline bound bots: start, batch, end, and set
       `GONIEC_REPLY_TO`.
    4. The `@claude` dispatcher.
