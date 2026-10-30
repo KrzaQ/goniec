@@ -240,7 +240,9 @@ offline bot from the chat. Messages from anyone else stay data.
 **Permissions.** A headless session has no terminal for permission prompts.
 
 - It starts with a narrow allowlist: read access to its project, and
-  `goniec send` and `goniec read`.
+  `goniec send` and `goniec read`. It also loads the user's global
+  `~/.claude/settings.json`, so the tools allowed there (read-only git
+  commands and the like) run without asking in Zulip too.
 - Everything else goes to a `PermissionRequest` hook, `goniec hook
   permission`. The docs say the hook also runs in `-p` sessions: "if no hook
   returns a decision, it denies the tool call", and a hook may answer `allow`
@@ -364,8 +366,12 @@ So goniec uses two kinds of key:
       Done (`headless.rs`): the responder takes only the trusted user's
       messages from the inbox (`take_where`) and makes them the prompt,
       verbatim. Every other message stays in the inbox as data.
-   3. The responder for offline bound bots: start, batch, end, and set
-      `GONIEC_REPLY_TO`.
+   3. The responder for offline bound bots (`responder.rs`): built
+      2026-10-30, not yet tested live. `responder = ["nick", …]` or `["*"]`
+      in `goniec.toml` turns it on per bot; without it the responder does
+      nothing. Inside a headless session `GONIEC_HEADLESS=1` stops the
+      global watcher, which also runs in `-p` mode, and `GONIEC_REPLY_TO_FILE`
+      gives the permission hook the topic of the latest turn.
    4. The `@claude` dispatcher.
 
 ## Conventions

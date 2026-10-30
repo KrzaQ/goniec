@@ -19,6 +19,14 @@ pub struct Keys {
     /// user's messages count as instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_user_id: Option<u64>,
+    /// The bound bots that get a headless session when their own session is
+    /// offline, by nickname. `"*"` means every bound bot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub responder: Vec<String>,
+    /// The `claude` binary for headless sessions. Default:
+    /// `~/.local/bin/claude`, because a service's PATH may not have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_path: Option<String>,
     #[serde(default)]
     pub bots: BTreeMap<String, Bot>,
 }
@@ -68,6 +76,11 @@ impl Keys {
         let tmp = path.with_extension("toml.tmp");
         write_private(&tmp, &text)?;
         fs::rename(&tmp, &path).with_context(|| format!("cannot replace {}", path.display()))
+    }
+
+    /// The responder may start headless sessions for this bot.
+    pub fn responds_for(&self, nick: &str) -> bool {
+        self.responder.iter().any(|n| n == "*" || n == nick)
     }
 
     pub fn bot(&self, nick: &str) -> Result<&Bot> {

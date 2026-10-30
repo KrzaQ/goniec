@@ -7,6 +7,7 @@ pub mod inbox;
 pub mod install;
 pub mod keys;
 pub mod provision;
+pub mod responder;
 pub mod rooms;
 #[cfg(unix)]
 pub mod rosa;

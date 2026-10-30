@@ -12,6 +12,7 @@ use crate::approve;
 use crate::binding;
 use crate::inbox::{self, Inbox, Record};
 use crate::keys::{self, Bot, Keys};
+use crate::responder::Responder;
 use crate::zulip::{self, Client, Message};
 
 /// How often the daemon looks for changes in the key file, and for
@@ -66,6 +67,8 @@ pub async fn run() -> Result<()> {
     let mut running: HashMap<String, Running> = HashMap::new();
     let mut seen_mtime: Option<SystemTime> = None;
     let mut last_reload = Instant::now();
+    let mut keys: Option<Keys> = None;
+    let mut responder = Responder::default();
     loop {
         let mtime = fs::metadata(&key_file).and_then(|m| m.modified()).ok();
         // A .goniec can appear or go without the key file changing, so the
@@ -74,9 +77,15 @@ pub async fn run() -> Result<()> {
             seen_mtime = mtime;
             last_reload = Instant::now();
             match Keys::load() {
-                Ok(keys) => reconcile(&keys, &mut running),
+                Ok(loaded) => {
+                    reconcile(&loaded, &mut running);
+                    keys = Some(loaded);
+                }
                 Err(e) => eprintln!("goniec daemon: {e:#}"),
             }
+        }
+        if let Some(keys) = &keys {
+            responder.tick(keys, &bound_bots(keys)).await;
         }
         tokio::time::sleep(TICK).await;
     }
