@@ -214,9 +214,12 @@ How it works:
   `CLAUDE.md` and files, but not the interactive conversation. Resuming the
   interactive conversation was rejected: two processes would write one
   transcript, and `claude -c` would then continue whichever is newest.
-- **A grace period of about 30 s** before the start, in case the user is
-  restarting the interactive session. Messages that arrive within about 10 s
-  go to the session as one batch.
+- **A grace period of 3 s** before the start, in case the user is
+  restarting the interactive session. If the interactive session comes back
+  anyway, the headless one ends after its turn. Messages that arrive within
+  2 s go to the session as one batch. The user found 30 s and 10 s too slow
+  for a conversation; the first answer now takes about 5 s plus the start-up
+  of `claude` and the model's own time.
 - **One session per (bot, topic).** Later messages in the topic go to the same
   session. A session ends after about 15 minutes without a new message. At
   most one new headless session per bot every few minutes, because each run

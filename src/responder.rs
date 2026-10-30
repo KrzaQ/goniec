@@ -21,11 +21,14 @@ use crate::inbox::{self, Inbox, Record, reply_target};
 use crate::keys::{Bot, Keys};
 
 /// Wait this long after the oldest message before starting a session, in
-/// case the user is restarting the interactive one.
-const GRACE: Duration = Duration::from_secs(30);
+/// case the user is restarting the interactive one. It is short, because a
+/// conversation should not wait; if the interactive session does come back,
+/// the headless one ends after its turn.
+const GRACE: Duration = Duration::from_secs(3);
 
-/// Collect messages for this long before a turn.
-const BATCH: Duration = Duration::from_secs(10);
+/// Collect messages for this long before a turn, so that a burst of lines
+/// becomes one turn.
+const BATCH: Duration = Duration::from_secs(2);
 
 /// End a session after this long without a turn.
 const IDLE_END: Duration = Duration::from_secs(15 * 60);
