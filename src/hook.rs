@@ -93,7 +93,7 @@ fn register_session(input: &Input, nick: &str) {
 /// For `SessionEnd`: the conversation is no longer live in this session.
 pub fn end() -> i32 {
     let input = read_input();
-    if let Err(e) = sessions::unregister(&input.session_id) {
+    if let Err(e) = sessions::unregister(&input.session_id, Owner::find().pid) {
         log("end", &e);
     }
     0

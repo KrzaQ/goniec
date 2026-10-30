@@ -52,9 +52,20 @@ pub fn register(entry: &Entry) -> Result<()> {
     let dir = dir()?;
     let path = dir.join(format!("{}.json", entry.session_id));
     if let Ok(text) = fs::read_to_string(&path)
-        && serde_json::from_str::<Entry>(&text).is_ok_and(|old| &old == entry)
+        && let Ok(old) = serde_json::from_str::<Entry>(&text)
     {
-        return Ok(());
+        if &old == entry {
+            return Ok(());
+        }
+        // The user resumed a conversation interactively while its headless
+        // process still runs. The interactive session owns the entry.
+        if entry.headless
+            && !old.headless
+            && old.pid != entry.pid
+            && process::alive(old.pid, old.start)
+        {
+            return Ok(());
+        }
     }
     fs::create_dir_all(&dir)?;
     let tmp = path.with_extension("json.tmp");
@@ -64,12 +75,22 @@ pub fn register(entry: &Entry) -> Result<()> {
     Ok(())
 }
 
-/// Remove a conversation's entry, for example at `SessionEnd`.
-pub fn unregister(session_id: &str) -> Result<()> {
+/// Remove a conversation's entry at `SessionEnd`, but only if the ending
+/// process `pid` holds it: when a headless process ends after the user
+/// resumed its conversation interactively, the entry is the interactive
+/// session's.
+pub fn unregister(session_id: &str, pid: u32) -> Result<()> {
     if !valid_id(session_id) {
         return Ok(());
     }
-    match fs::remove_file(dir()?.join(format!("{session_id}.json"))) {
+    let path = dir()?.join(format!("{session_id}.json"));
+    let holder = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Entry>(&text).ok());
+    if holder.is_some_and(|e| e.pid != pid && process::alive(e.pid, e.start)) {
+        return Ok(());
+    }
+    match fs::remove_file(&path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
         _ => Ok(()),
     }
@@ -144,7 +165,18 @@ mod tests {
         // The dead entry's file is gone.
         assert!(!dir().unwrap().join("bbbb-2.json").exists());
         assert_eq!(find("aaaa-1").unwrap(), Some(alive.clone()));
-        unregister("aaaa-1").unwrap();
+        // Another process cannot remove a live entry.
+        unregister("aaaa-1", 1).unwrap();
+        assert_eq!(live().unwrap().len(), 1);
+        // A headless registration does not replace a live interactive one.
+        let headless = Entry {
+            headless: true,
+            pid: 1,
+            ..alive.clone()
+        };
+        register(&headless).unwrap();
+        assert_eq!(find("aaaa-1").unwrap(), Some(alive.clone()));
+        unregister("aaaa-1", alive.pid).unwrap();
         assert!(live().unwrap().is_empty());
         fs::remove_dir_all(&state).unwrap();
     }
