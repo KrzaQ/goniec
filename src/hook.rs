@@ -17,6 +17,8 @@ use crate::binding;
 use crate::headless;
 use crate::inbox::{self, Inbox};
 use crate::keys::Keys;
+use crate::process::Owner;
+use crate::sessions;
 
 /// Claude Code takes at most 10,000 characters of hook output.
 const MAX_CHARS: usize = 9_000;
@@ -39,6 +41,9 @@ const EXIT_WAKE: i32 = 2;
 struct Input {
     #[serde(default)]
     hook_event_name: String,
+    /// The conversation's session UUID.
+    #[serde(default)]
+    session_id: String,
     /// For `PermissionRequest`: the tool and its input.
     #[serde(default)]
     tool_name: String,
@@ -63,6 +68,35 @@ fn log(what: &str, err: &anyhow::Error) {
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(file, "{now} hook {what}: {err:#}");
     }
+}
+
+/// Record that this conversation is live in this session. Failures are only
+/// logged: delivery must not depend on the registry.
+fn register_session(input: &Input, nick: &str) {
+    if input.session_id.is_empty() {
+        return;
+    }
+    let owner = Owner::find();
+    let entry = binding::session_dir().map(|dir| sessions::Entry {
+        session_id: input.session_id.clone(),
+        nick: nick.to_owned(),
+        pid: owner.pid,
+        start: owner.start,
+        dir,
+        headless: headless::active(),
+    });
+    if let Err(e) = entry.and_then(|entry| sessions::register(&entry)) {
+        log("register", &e);
+    }
+}
+
+/// For `SessionEnd`: the conversation is no longer live in this session.
+pub fn end() -> i32 {
+    let input = read_input();
+    if let Err(e) = sessions::unregister(&input.session_id) {
+        log("end", &e);
+    }
+    0
 }
 
 /// For `PermissionRequest` in a headless session that goniec started: ask the
@@ -148,6 +182,7 @@ pub fn run(event: Option<&str>) -> i32 {
         Some("wait") => wait(),
         Some("context") => context(),
         Some("permission") => permission(),
+        Some("end") => end(),
         other => {
             log("dispatch", &anyhow::anyhow!("unknown hook event {other:?}"));
             0
@@ -162,9 +197,13 @@ pub fn context() -> i32 {
         // In a headless session the trusted user's messages are the
         // responder's prompt, so the hook leaves them alone.
         Some((nick, inbox, trusted)) if headless::active() => {
+            register_session(&input, &nick);
             inbox.take_fitting_where(&nick, MAX_CHARS, |r| !headless::is_instruction(r, trusted))
         }
-        Some((nick, inbox, _)) => inbox.take_fitting(&nick, MAX_CHARS),
+        Some((nick, inbox, _)) => {
+            register_session(&input, &nick);
+            inbox.take_fitting(&nick, MAX_CHARS)
+        }
         None => Ok(None),
     }) {
         Ok(Some(text)) => text,
@@ -188,8 +227,8 @@ pub fn context() -> i32 {
 /// For `asyncRewake` on `SessionStart` and `Stop`: wait until the inbox has
 /// messages, print them to stderr and exit 2, which wakes the session.
 pub fn wait() -> i32 {
-    read_input();
-    match wait_for_messages() {
+    let input = read_input();
+    match wait_for_messages(&input) {
         Ok(Some(text)) => {
             eprint!("{text}");
             EXIT_WAKE
@@ -202,14 +241,15 @@ pub fn wait() -> i32 {
     }
 }
 
-fn wait_for_messages() -> Result<Option<String>> {
+fn wait_for_messages(input: &Input) -> Result<Option<String>> {
+    let Some((nick, inbox, _)) = session_inbox()? else {
+        return Ok(None);
+    };
+    register_session(input, &nick);
     // A headless session gets its turns from the responder, not from a wake.
     if headless::active() {
         return Ok(None);
     }
-    let Some((nick, inbox, _)) = session_inbox()? else {
-        return Ok(None);
-    };
     // One watcher per nickname. A second one, from the next Stop while the
     // first still waits, ends at once. The lock ends with the process.
     let lock_path = inbox::state_dir()?
@@ -245,124 +285,5 @@ fn wait_for_messages() -> Result<Option<String>> {
             )));
         }
         sleep(POLL);
-    }
-}
-
-/// The Claude Code process this hook runs for. A watcher whose session has
-/// ended must not keep the lock for its nickname.
-#[cfg(target_os = "linux")]
-struct Owner {
-    pid: u32,
-    start: u64,
-}
-
-#[cfg(target_os = "linux")]
-impl Owner {
-    /// `$CLAUDE_PID`, else the nearest ancestor named `claude`, else the
-    /// parent process.
-    fn find() -> Self {
-        if let Some(pid) = std::env::var("CLAUDE_PID")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            && let Some(stat) = Stat::read(pid)
-        {
-            return Self {
-                pid,
-                start: stat.start,
-            };
-        }
-        let parent = std::os::unix::process::parent_id();
-        let mut pid = parent;
-        for _ in 0..16 {
-            let Some(stat) = Stat::read(pid) else { break };
-            if stat.comm == "claude" {
-                return Self {
-                    pid,
-                    start: stat.start,
-                };
-            }
-            if stat.ppid <= 1 {
-                break;
-            }
-            pid = stat.ppid;
-        }
-        let start = Stat::read(parent).map_or(0, |s| s.start);
-        Self { pid: parent, start }
-    }
-
-    /// The process still runs, and it is the same process, not a new one
-    /// with a reused PID.
-    fn alive(&self) -> bool {
-        Stat::read(self.pid).is_some_and(|s| s.start == self.start)
-    }
-
-    /// Claude Code says this session is in a turn (`busy`) or waits for a
-    /// permission answer (`waiting`). It keeps one file per process in
-    /// `~/.claude/sessions/<pid>.json`, with a `status` field. The file is
-    /// internal and undocumented: the documented `claude agents --json` lists
-    /// background sessions only, not ones started with `claude` in a
-    /// terminal. If the file is missing or its format changes, this says no,
-    /// so the watcher delivers as if the session were idle.
-    fn in_turn(&self) -> bool {
-        let dir = match std::env::var_os("CLAUDE_CONFIG_DIR") {
-            Some(dir) => std::path::PathBuf::from(dir),
-            None => match std::env::home_dir() {
-                Some(home) => home.join(".claude"),
-                None => return false,
-            },
-        };
-        let Ok(text) = fs::read_to_string(dir.join("sessions").join(format!("{}.json", self.pid)))
-        else {
-            return false;
-        };
-        let status = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| v["status"].as_str().map(str::to_owned));
-        matches!(status.as_deref(), Some("busy" | "waiting"))
-    }
-}
-
-#[cfg(target_os = "linux")]
-struct Stat {
-    comm: String,
-    ppid: u32,
-    start: u64,
-}
-
-#[cfg(target_os = "linux")]
-impl Stat {
-    /// Parse `/proc/<pid>/stat`. The name is in parentheses and may contain
-    /// spaces, so the other fields are counted from the last `)`.
-    fn read(pid: u32) -> Option<Self> {
-        let text = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let open = text.find('(')?;
-        let close = text.rfind(')')?;
-        let fields: Vec<&str> = text[close + 1..].split_whitespace().collect();
-        Some(Self {
-            comm: text[open + 1..close].to_owned(),
-            // Fields 4 and 22 of stat(5); `fields[0]` is field 3.
-            ppid: fields.get(1)?.parse().ok()?,
-            start: fields.get(19)?.parse().ok()?,
-        })
-    }
-}
-
-/// Elsewhere goniec cannot see the owner yet, so the watcher waits until
-/// Claude Code ends it.
-#[cfg(not(target_os = "linux"))]
-struct Owner;
-
-#[cfg(not(target_os = "linux"))]
-impl Owner {
-    fn find() -> Self {
-        Owner
-    }
-
-    fn alive(&self) -> bool {
-        true
-    }
-
-    fn in_turn(&self) -> bool {
-        false
     }
 }

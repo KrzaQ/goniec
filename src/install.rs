@@ -25,7 +25,10 @@ fn guarded(event: &str) -> String {
 /// its hook events. That covers older forms such as `goniec hook wait`.
 fn is_ours(hook: &Value) -> bool {
     hook["command"].as_str().is_some_and(|c| {
-        c.contains("goniec") && (c.contains("hook wait") || c.contains("hook context"))
+        c.contains("goniec")
+            && ["hook wait", "hook context", "hook end"]
+                .iter()
+                .any(|event| c.contains(event))
     })
 }
 
@@ -56,6 +59,11 @@ fn our_groups() -> Vec<(&'static str, Value)> {
         (
             "PostToolBatch",
             json!({ "hooks": [{ "type": "command", "command": guarded("context"),
+                                 "timeout": 10 }] }),
+        ),
+        (
+            "SessionEnd",
+            json!({ "hooks": [{ "type": "command", "command": guarded("end"),
                                  "timeout": 10 }] }),
         ),
     ]

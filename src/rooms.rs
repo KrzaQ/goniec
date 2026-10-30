@@ -73,13 +73,23 @@ pub async fn who(keys: &Keys, session_dir: &Path) -> Result<String> {
         writeln!(out, "{}  {}", user.full_name, describe_presence(p, now))?;
     }
 
+    // Which local conversations are live, as the sessions report it.
+    let live = crate::sessions::live().unwrap_or_default();
     let mut bots: Vec<&User> = users.iter().filter(|u| u.is_bot).collect();
     bots.sort_by(|a, b| nick(a).cmp(nick(b)));
     for user in bots {
         let nick = nick(user);
         let here = match keys.bots.get(nick).filter(|b| b.user_id == user.user_id) {
             Some(bot) => match &bot.dir {
-                Some(dir) => format!("bound here to {}", dir.display()),
+                Some(dir) => {
+                    let online = live.iter().filter(|e| e.nick == nick).count();
+                    let state = match online {
+                        0 => "offline".to_owned(),
+                        1 => "online".to_owned(),
+                        n => format!("online in {n} sessions"),
+                    };
+                    format!("bound here to {}, {state}", dir.display())
+                }
                 None => "key on this host".to_owned(),
             },
             None => "not on this host".to_owned(),

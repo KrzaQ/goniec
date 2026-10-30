@@ -411,8 +411,11 @@ So goniec uses two kinds of key:
       Done (`headless.rs`): the responder takes only the trusted user's
       messages from the inbox (`take_where`) and makes them the prompt,
       verbatim. Every other message stays in the inbox as data.
-   3. Session registration (`SessionStart`, `SessionEnd`, `goniec hook
-      end`), so the daemon knows which conversation is live.
+   3. ~~Session registration.~~ Done 2026-10-30 (`sessions.rs`): `hook
+      wait` and `hook context` register the conversation, `hook end`
+      (`SessionEnd`) removes it, and dead processes are dropped. `goniec
+      sessions` lists them; `goniec who` shows local bots as online or
+      offline.
    4. Threads with owners: per-thread routing and inboxes, and rework the
       responder (`responder.rs`, built 2026-10-30 in the older per-bot
       shape) to resume the owner conversation. `responder = ["nick", …]` or

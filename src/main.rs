@@ -50,10 +50,14 @@ enum Command {
         #[arg(long)]
         remove: bool,
     },
-    /// Claude Code hooks: `wait` (asyncRewake on SessionStart and Stop) and
-    /// `context` (PostToolBatch). Exits 0 outside a bound session directory.
+    /// List the live conversations of bound sessions on this host
+    Sessions,
+    /// Claude Code hooks: `wait` (asyncRewake on SessionStart and Stop),
+    /// `context` (PostToolBatch), `end` (SessionEnd) and `permission`
+    /// (PermissionRequest in headless sessions). Exit 0 outside a bound
+    /// session directory.
     Hook {
-        /// `wait` or `context`
+        /// `wait`, `context`, `end` or `permission`
         event: String,
     },
 }
@@ -146,6 +150,23 @@ async fn run(cli: Cli) -> Result<()> {
             match changed {
                 true => println!("goniec hooks {what} {}", path.display()),
                 false => println!("{} already as wanted; not changed", path.display()),
+            }
+            Ok(())
+        }
+        Command::Sessions => {
+            for e in goniec::sessions::live()? {
+                let kind = if e.headless {
+                    "headless"
+                } else {
+                    "interactive"
+                };
+                println!(
+                    "@{}  {}  {kind}  pid {}  {}",
+                    e.nick,
+                    e.session_id,
+                    e.pid,
+                    e.dir.display()
+                );
             }
             Ok(())
         }
