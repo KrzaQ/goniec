@@ -313,6 +313,15 @@ headless process for it ends after its turn (tested live with `@kiekert`).
 - Messages that arrive within 2 s go to a session as one batch.
 - A headless process ends after about 15 minutes without a new message. Its
   thread keeps the owner, so the next message resumes it.
+- **A stopping daemon drains.** On SIGTERM it starts no turn, lets running
+  headless turns finish and post their answers, closes each process's
+  input once it is idle, and exits when none is left. A killed turn would
+  be lost: the messages that started it already count as delivered.
+  Messages that arrive meanwhile stay in the inbox for the next daemon.
+  This needs the service manager to signal only the daemon and to wait:
+  with systemd, `KillMode=mixed` and a `TimeoutStopSec` longer than a turn
+  (the dotfiles unit, agreed on 2026-10-30). With the old
+  `KillMode=control-group`, a restart killed headless turns mid-way.
 - **At most 3 headless processes per bot, 5 for a dispatcher** (`@claude`),
   the user's numbers (2026-10-30). A conversation over the limit does not
   wait: it evicts the bot's process that has waited longest since its last

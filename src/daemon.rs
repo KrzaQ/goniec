@@ -74,6 +74,10 @@ pub async fn run() -> Result<()> {
     let mut keys: Option<Keys> = None;
     let mut responder = Responder::default();
     let (orders, mut received) = unbounded_channel::<Order>();
+    // On SIGTERM the daemon drains: running headless turns finish and post
+    // their answers, then it exits. The service manager must let it (with
+    // systemd: KillMode=mixed, and a TimeoutStopSec longer than a turn).
+    let mut stop = Stop::new()?;
     loop {
         let mtime = fs::metadata(&key_file).and_then(|m| m.modified()).ok();
         // A .goniec can appear or go without the key file changing, so the
@@ -95,7 +99,54 @@ pub async fn run() -> Result<()> {
             }
             responder.tick(keys, &bound_bots(keys)).await;
         }
+        tokio::select! {
+            _ = stop.wait() => break,
+            _ = tokio::time::sleep(TICK) => {}
+        }
+    }
+    let mut last = usize::MAX;
+    loop {
+        let left = responder.drain().await;
+        if left == 0 {
+            eprintln!("goniec daemon: stopped");
+            return Ok(());
+        }
+        if left != last {
+            eprintln!("goniec daemon: stopping after {left} headless turn(s) finish");
+            last = left;
+        }
         tokio::time::sleep(TICK).await;
+    }
+}
+
+/// The service manager's request to stop: SIGTERM on Unix, Ctrl-C
+/// elsewhere.
+#[cfg(unix)]
+struct Stop(tokio::signal::unix::Signal);
+
+#[cfg(unix)]
+impl Stop {
+    fn new() -> Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self(signal(SignalKind::terminate())?))
+    }
+
+    async fn wait(&mut self) {
+        self.0.recv().await;
+    }
+}
+
+#[cfg(not(unix))]
+struct Stop;
+
+#[cfg(not(unix))]
+impl Stop {
+    fn new() -> Result<Self> {
+        Ok(Self)
+    }
+
+    async fn wait(&mut self) {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

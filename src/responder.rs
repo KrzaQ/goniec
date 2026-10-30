@@ -117,6 +117,20 @@ pub struct Responder {
 }
 
 impl Responder {
+    /// The daemon is stopping: start no turn, and end every process as soon
+    /// as its current turn is done, so that the turn's answer is still
+    /// posted. A killed turn would be lost, because its messages already
+    /// count as delivered. Returns how many processes still run.
+    pub async fn drain(&mut self) -> usize {
+        self.reap().await;
+        for conv in self.running.values_mut() {
+            if !conv.busy() {
+                conv.stdin = None;
+            }
+        }
+        self.running.len()
+    }
+
     /// Look at every served bot once. Errors are logged per bot.
     pub async fn tick(&mut self, keys: &Keys, bound: &HashMap<String, Bot>) {
         self.reap().await;
