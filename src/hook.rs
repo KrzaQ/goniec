@@ -78,25 +78,27 @@ fn session_id(id: &str) -> Option<&str> {
 
 /// A message waits that this conversation may take: its thread belongs to
 /// the conversation, or has no owner yet.
-fn has_mine(nick: &str, inbox: &Inbox, session: &str) -> Result<bool> {
-    let table = threads::load(nick)?;
-    Ok(inbox
+fn has_mine(bot: &SessionBot, session: &str) -> Result<bool> {
+    let table = threads::load(&bot.nick)?;
+    Ok(bot
+        .inbox
         .peek()?
         .iter()
-        .any(|r| threads::may_take(&table, r, session_id(session))))
+        .any(|r| threads::may_take(&table, r, session_id(session), bot.unowned)))
 }
 
 /// Take the messages this conversation may take and `extra` accepts, as one
 /// text, and make the conversation the owner of their threads.
 fn take_mine(
-    nick: &str,
-    inbox: &Inbox,
+    bot: &SessionBot,
     session: &str,
     extra: impl Fn(&Record) -> bool,
 ) -> Result<Option<String>> {
+    let nick = bot.nick.as_str();
     let table = threads::load(nick)?;
-    let mine = |r: &Record| threads::may_take(&table, r, session_id(session)) && extra(r);
-    let Some((text, taken)) = inbox.take_fitting_where(nick, MAX_CHARS, mine)? else {
+    let mine =
+        |r: &Record| threads::may_take(&table, r, session_id(session), bot.unowned) && extra(r);
+    let Some((text, taken)) = bot.inbox.take_fitting_where(nick, MAX_CHARS, mine)? else {
         return Ok(None);
     };
     if let Some(id) = session_id(session) {
@@ -193,7 +195,17 @@ fn ask_trusted_user(input: &Input) -> Result<Option<approve::Answer>> {
 /// This session's nickname and inbox, if its directory is bound to a bot
 /// whose key this host holds. The check is local; the daemon has already
 /// checked the key with Zulip.
-fn session_inbox() -> Result<Option<(String, Inbox, Option<u64>)>> {
+/// The bot a bound session speaks as, with what its hooks need.
+struct SessionBot {
+    nick: String,
+    inbox: Inbox,
+    trusted_user_id: Option<u64>,
+    /// The session may take messages of threads without an owner. Not for
+    /// a dispatcher bot: its new threads are for the responder.
+    unowned: bool,
+}
+
+fn session_inbox() -> Result<Option<SessionBot>> {
     let dir = binding::session_dir()?;
     let Some(binding) = binding::find(&dir)? else {
         return Ok(None);
@@ -206,11 +218,12 @@ fn session_inbox() -> Result<Option<(String, Inbox, Option<u64>)>> {
             dir.join(binding::FILE).display()
         );
     }
-    Ok(Some((
-        binding.nick.clone(),
-        Inbox::open(&binding.nick)?,
-        keys.trusted_user_id,
-    )))
+    Ok(Some(SessionBot {
+        inbox: Inbox::open(&binding.nick)?,
+        trusted_user_id: keys.trusted_user_id,
+        unowned: !keys.dispatches(&binding.nick),
+        nick: binding.nick,
+    }))
 }
 
 /// Run `goniec hook <event>`. This runs before clap parses anything, because
@@ -233,13 +246,13 @@ pub fn run(event: Option<&str>) -> i32 {
 pub fn context() -> i32 {
     let input = read_input();
     let text = match session_inbox().and_then(|found| match found {
-        Some((nick, inbox, trusted)) => {
-            register_session(&input, &nick);
+        Some(bot) => {
+            register_session(&input, &bot.nick);
             // In a headless session the trusted user's messages are the
             // responder's prompt, so the hook leaves them alone.
             let headless = headless::active();
-            take_mine(&nick, &inbox, &input.session_id, |r| {
-                !headless || !headless::is_instruction(r, trusted)
+            take_mine(&bot, &input.session_id, |r| {
+                !headless || !headless::is_instruction(r, bot.trusted_user_id)
             })
         }
         None => Ok(None),
@@ -280,9 +293,10 @@ pub fn wait() -> i32 {
 }
 
 fn wait_for_messages(input: &Input) -> Result<Option<String>> {
-    let Some((nick, inbox, _)) = session_inbox()? else {
+    let Some(bot) = session_inbox()? else {
         return Ok(None);
     };
+    let nick = bot.nick.clone();
     register_session(input, &nick);
     // A headless session gets its turns from the responder, not from a wake.
     if headless::active() {
@@ -311,9 +325,9 @@ fn wait_for_messages(input: &Input) -> Result<Option<String>> {
     loop {
         // While a turn runs, PostToolBatch delivers inline. A wake from here
         // would wait for the turn to end and then cost a turn of its own.
-        if has_mine(&nick, &inbox, &input.session_id)?
+        if has_mine(&bot, &input.session_id)?
             && !owner.in_turn()
-            && let Some(text) = take_mine(&nick, &inbox, &input.session_id, |_| true)?
+            && let Some(text) = take_mine(&bot, &input.session_id, |_| true)?
         {
             return Ok(Some(text));
         }

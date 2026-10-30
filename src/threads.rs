@@ -49,12 +49,14 @@ pub fn load(nick: &str) -> Result<Table> {
 }
 
 /// The conversation `session_id` may take this message: it owns the thread,
-/// or the thread has no owner yet. Without a session ID, only threads
-/// without an owner.
-pub fn may_take(table: &Table, record: &Record, session_id: Option<&str>) -> bool {
+/// or the thread has no owner yet and `unowned` allows that. Without a
+/// session ID, only threads without an owner. A dispatcher bot's
+/// interactive sessions pass `unowned = false`: its new threads are for the
+/// responder.
+pub fn may_take(table: &Table, record: &Record, session_id: Option<&str>, unowned: bool) -> bool {
     match table.get(&key(record)) {
         Some(owner) => Some(owner.session_id.as_str()) == session_id,
-        None => true,
+        None => unowned,
     }
 }
 
@@ -115,8 +117,9 @@ mod tests {
     fn ownership() {
         let mut table = Table::new();
         let r = record(1, Some("deploy"), 8);
-        assert!(may_take(&table, &r, Some("a")));
-        assert!(may_take(&table, &r, None));
+        assert!(may_take(&table, &r, Some("a"), true));
+        assert!(may_take(&table, &r, None, true));
+        assert!(!may_take(&table, &r, Some("a"), false));
         table.insert(
             key(&r),
             Owner {
@@ -124,10 +127,16 @@ mod tests {
                 dir: "/p".into(),
             },
         );
-        assert!(may_take(&table, &r, Some("a")));
-        assert!(!may_take(&table, &r, Some("b")));
-        assert!(!may_take(&table, &r, None));
+        assert!(may_take(&table, &r, Some("a"), true));
+        assert!(may_take(&table, &r, Some("a"), false));
+        assert!(!may_take(&table, &r, Some("b"), true));
+        assert!(!may_take(&table, &r, None, true));
         // Another topic is still free.
-        assert!(may_take(&table, &record(2, Some("other"), 8), Some("b")));
+        assert!(may_take(
+            &table,
+            &record(2, Some("other"), 8),
+            Some("b"),
+            true
+        ));
     }
 }

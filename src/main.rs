@@ -110,7 +110,7 @@ async fn run(cli: Cli) -> Result<()> {
             // responder's prompt, not data to read.
             let headless = goniec::headless::active();
             let records = inbox.take_where(|r| {
-                threads::may_take(&table, r, session.as_deref())
+                threads::may_take(&table, r, session.as_deref(), !keys.dispatches(&id.nick))
                     && !(headless && goniec::headless::is_instruction(r, keys.trusted_user_id))
             })?;
             if let (Some(session), Some(dir)) = (&session, &id.dir) {

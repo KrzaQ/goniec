@@ -281,8 +281,12 @@ headless process for it ends after its turn (tested live with `@kiekert`).
   answer goes there automatically, so the model learns it at that moment.
   This happens mostly in a conversation that ran interactively before, where
   `goniec send` was the right way to answer.
-- **`@claude`** is a bot like any other: every mention starts a new thread,
-  in a fixed directory, and the threads work as above.
+- **`@claude`** is a bound bot like any other, with one difference: it is a
+  dispatcher (`dispatch = ["claude"]` in `goniec.toml`). Every new thread of
+  a dispatcher bot gets a new headless conversation, even while an
+  interactive session of the bot is online, and no session takes a
+  dispatcher's thread that has no owner yet. Owned threads work as above:
+  the user can take a `@claude` conversation over with `claude --resume`.
 
 **The trusted user.** `trusted_user_id` in `goniec.toml` names the user's own
 Zulip account (one user ID, local to each machine, not secret). A message
@@ -439,7 +443,7 @@ So goniec uses two kinds of key:
       or `["*"]` in `goniec.toml` turns it on per bot. An interactive
       session counts as online only once it has registered, which happens
       at its next turn.
-   5. The `@claude` dispatcher.
+   5. The `@claude` dispatcher: the `dispatch` list, built 2026-10-30.
 
 ## Conventions
 

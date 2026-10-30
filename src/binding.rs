@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const FILE: &str = ".goniec";
 
 /// Nicknames that goniec itself uses.
-const RESERVED: &[&str] = &["admin", "guest", "claude"];
+const RESERVED: &[&str] = &["admin", "guest"];
 
 #[derive(Serialize, Deserialize)]
 pub struct Binding {

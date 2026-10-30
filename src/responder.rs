@@ -137,7 +137,9 @@ impl Responder {
         let inbox = Inbox::open(nick)?;
         let pending = inbox.peek()?;
         let interactive = |id: &str| live.iter().any(|e| e.session_id == id && !e.headless);
-        let online = live.iter().any(|e| e.nick == nick && !e.headless);
+        // A dispatcher bot starts a new conversation for every new thread,
+        // whether or not an interactive session of it is online.
+        let online = !keys.dispatches(nick) && live.iter().any(|e| e.nick == nick && !e.headless);
 
         // Which conversations have to run, and in which directory.
         let mut table = threads::load(nick)?;

@@ -23,6 +23,12 @@ pub struct Keys {
     /// offline, by nickname. `"*"` means every bound bot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub responder: Vec<String>,
+    /// Dispatcher bots, by nickname: every new thread of such a bot gets a
+    /// new headless conversation, even while an interactive session of the
+    /// bot is online, and interactive sessions do not take its new threads.
+    /// `@claude` is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispatch: Vec<String>,
     /// The `claude` binary for headless sessions. Default:
     /// `~/.local/bin/claude`, because a service's PATH may not have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,6 +82,11 @@ impl Keys {
         let tmp = path.with_extension("toml.tmp");
         write_private(&tmp, &text)?;
         fs::rename(&tmp, &path).with_context(|| format!("cannot replace {}", path.display()))
+    }
+
+    /// Every new thread of this bot gets a new headless conversation.
+    pub fn dispatches(&self, nick: &str) -> bool {
+        self.dispatch.iter().any(|n| n == nick)
     }
 
     /// The responder may start headless sessions for this bot.
