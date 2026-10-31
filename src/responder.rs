@@ -336,6 +336,7 @@ impl Responder {
         } = order;
         let result = match command {
             ChatCommand::Stop => self.stop(&nick, &record).await,
+            ChatCommand::Compact(focus) => self.compact(&nick, &record, &focus).await,
             command => self.run_command(keys, &nick, &record, command),
         };
         let answer = match result {
@@ -380,6 +381,42 @@ impl Responder {
         stdin.write_all(format!("{line}\n").as_bytes()).await?;
         stdin.flush().await?;
         Ok("Stopping the current turn.".to_owned())
+    }
+
+    /// `!compact`: summarize the conversation now, on a pi bot. pi's answer
+    /// ends this like a turn; `read_output` posts the result.
+    async fn compact(&mut self, nick: &str, record: &Record, focus: &str) -> Result<String> {
+        let thread = threads::key(record);
+        let table = threads::load(nick)?;
+        let conv = table
+            .get(&thread)
+            .and_then(|o| self.running.get_mut(&o.session_id));
+        let Some(conv) = conv else {
+            return Ok(
+                "The conversation is not running. Send a message first, then `!compact`."
+                    .to_owned(),
+            );
+        };
+        if conv.pi_model.is_none() {
+            return Ok("`!compact` works only on pi bots.".to_owned());
+        }
+        if conv.busy() {
+            return Ok("A turn is running. Send `!compact` after it.".to_owned());
+        }
+        let line = if focus.is_empty() {
+            serde_json::json!({ "type": "compact" })
+        } else {
+            serde_json::json!({ "type": "compact", "customInstructions": focus })
+        };
+        fs::write(&conv.reply_file, &thread)?;
+        let stdin = conv
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("the conversation's input is closed"))?;
+        stdin.write_all(format!("{line}\n").as_bytes()).await?;
+        stdin.flush().await?;
+        conv.state.lock().unwrap().busy = true;
+        Ok("Compacting. This can take a few minutes on a long conversation.".to_owned())
     }
 
     fn run_command(
@@ -609,7 +646,9 @@ impl Responder {
                 )?;
                 Ok(format!("This thread now runs `{model}`."))
             }
-            ChatCommand::Stop => unreachable!("handled in `command`"),
+            ChatCommand::Stop | ChatCommand::Compact(_) => {
+                unreachable!("handled in `command`")
+            }
             ChatCommand::Unknown(word) => Ok(format!(
                 "Unknown command `!{word}`. Commands: {}.",
                 commands::HELP
@@ -1022,6 +1061,21 @@ async fn read_output(
                     None => ("success", text),
                 };
                 finish_turn(&poster, &state, how, &text).await;
+            }
+            (true, "response") if event["command"] == "compact" => {
+                let text = if event["success"] == true {
+                    let after = event["data"]["estimatedTokensAfter"].as_u64();
+                    state.lock().unwrap().context_tokens = after;
+                    format!(
+                        "Compacted: {} tokens, now about {}.",
+                        event["data"]["tokensBefore"],
+                        after.unwrap_or(0)
+                    )
+                } else {
+                    let error = event["error"].as_str().unwrap_or("pi refused");
+                    format!("⚠ Compaction failed: {error}")
+                };
+                finish_turn(&poster, &state, "compact", &text).await;
             }
             // A prompt pi refused, or handled without a run, ends no run.
             (true, "response") if event["command"] == "prompt" => {

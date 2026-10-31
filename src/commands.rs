@@ -28,6 +28,9 @@ pub enum Command {
     Stop,
     /// Forget the thread's conversation: the next message starts a new one.
     New,
+    /// Compact the conversation on a pi bot. The text, if any, focuses the
+    /// summary.
+    Compact(String),
     Unknown(String),
 }
 
@@ -43,13 +46,14 @@ impl Command {
             Command::Model(_) => "model",
             Command::Stop => "stop",
             Command::New => "new",
+            Command::Compact(_) => "compact",
             Command::Unknown(word) => word,
         }
     }
 }
 
 /// The commands, for the answer to an unknown one.
-pub const HELP: &str = "`!status`, `!restart`, `!headless [text]`, `!interactive`, `!new`, `!stop`, `!model [size] [flavor]`";
+pub const HELP: &str = "`!status`, `!restart`, `!headless [text]`, `!interactive`, `!new`, `!stop`, `!compact [focus]`, `!model [size] [flavor]`";
 
 /// A command, sent by a bot's listener to the responder.
 pub struct Order {
@@ -71,6 +75,7 @@ pub fn parse(content: &str) -> Option<Command> {
         "model" => Command::Model(rest.trim().to_owned()),
         "stop" => Command::Stop,
         "new" => Command::New,
+        "compact" => Command::Compact(rest.trim().to_owned()),
         _ => Command::Unknown(word.to_owned()),
     })
 }
@@ -99,6 +104,10 @@ mod tests {
         assert_eq!(parse("!model"), Some(Command::Model(String::new())));
         assert_eq!(parse("!stop"), Some(Command::Stop));
         assert_eq!(parse("!new"), Some(Command::New));
+        assert_eq!(
+            parse("@**qwen** !compact keep the decisions"),
+            Some(Command::Compact("keep the decisions".into()))
+        );
         assert_eq!(parse("!quit"), Some(Command::Unknown("quit".into())));
         assert_eq!(parse("@**series** check this!"), None);
         assert_eq!(parse("hello !status"), None);

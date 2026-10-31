@@ -403,6 +403,9 @@ headless process for it ends after its turn (tested live with `@kiekert`).
     stays in the conversation, so the next prompt starts with a line that
     says to drop the stopped task. Without it, Qwen answered a question about
     an image by finishing the stopped count.
+  - `!compact [focus]`: summarize the conversation now, on a pi bot (its
+    RPC `compact`). The text focuses the summary. The conversation must be
+    running and between turns; goniec posts the token counts.
   - `!model`: choose a pi thread's model (see *pi bots*).
 - **`@claude`** is a bound bot like any other, with one difference: it is a
   dispatcher (`dispatch = ["claude"]` in `goniec.toml`). Every new thread of
@@ -697,6 +700,9 @@ So goniec uses two kinds of key:
    6. Commands (`!status`, `!restart`, `!headless`, `!interactive`) and the
       restart on a new configuration. Built 2026-10-30. The commands are
       tested live; the restart is not.
+   7. pi bots: built and tested live on 2026-10-31 on a test daemon (gate,
+      classifier log, `!model`, `!stop`, `!new`, images, resume). Not tested
+      live: a compaction, `!compact`, and eviction between two topics.
 
 ## Conventions
 
