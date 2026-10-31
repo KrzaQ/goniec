@@ -399,7 +399,10 @@ headless process for it ends after its turn (tested live with `@kiekert`).
     a new one. Refused for an interactive session, which would lose the
     thread. The thread keeps its model.
   - `!stop`: interrupt the running turn, on a pi bot (its RPC `abort`).
-    goniec has no way to do this on Claude Code yet.
+    goniec has no way to do this on Claude Code yet. The partial answer
+    stays in the conversation, so the next prompt starts with a line that
+    says to drop the stopped task. Without it, Qwen answered a question about
+    an image by finishing the stopped count.
   - `!model`: choose a pi thread's model (see *pi bots*).
 - **`@claude`** is a bound bot like any other, with one difference: it is a
   dispatcher (`dispatch = ["claude"]` in `goniec.toml`). Every new thread of

@@ -94,6 +94,10 @@ struct State {
     last_turn_end: Option<Instant>,
     /// On pi, the conversation's size in tokens after the last run.
     context_tokens: Option<u64>,
+    /// The user stopped the last turn. Its partial answer stays in the
+    /// conversation, and without a word the model went on with that task
+    /// instead of the next message (seen live on 2026-10-31).
+    stopped: bool,
 }
 
 /// A headless process running one conversation.
@@ -1011,6 +1015,7 @@ async fn read_output(
             (true, "agent_settled") => {
                 let (text, error) = std::mem::take(&mut answer);
                 let aborted = event["aborted"].as_bool().unwrap_or(false);
+                state.lock().unwrap().stopped = aborted;
                 let (how, text) = match error {
                     _ if aborted => ("aborted", "⏹ Stopped.".to_owned()),
                     Some(error) => ("error", format!("⚠ The turn ended with an error: {error}")),
@@ -1077,6 +1082,9 @@ async fn feed(
     {
         prompt = format!("{}\n{prompt}", headless::thread_line(first));
         conv.last_thread = Some(threads::key(first));
+    }
+    if std::mem::take(&mut conv.state.lock().unwrap().stopped) {
+        prompt = format!("{}\n{prompt}", headless::STOPPED_LINE);
     }
     let images = headless::images(&instructions);
     let line = if conv.pi_model.is_some() {
