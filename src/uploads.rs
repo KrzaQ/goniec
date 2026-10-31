@@ -100,8 +100,7 @@ pub struct Session {
 }
 
 /// The calling session: from Claude Code's registry entry for the `claude`
-/// ancestor process, else from `CLAUDE_CODE_SESSION_ID`, which its Bash
-/// tool sets.
+/// ancestor process, else from the environment (`headless::session_id`).
 pub fn current_session(project_dir: &Path) -> Option<Session> {
     let registered = crate::process::claude_ancestor().and_then(|pid| {
         let path = std::env::home_dir()?.join(format!(".claude/sessions/{pid}.json"));
@@ -109,7 +108,7 @@ pub fn current_session(project_dir: &Path) -> Option<Session> {
         entry["sessionId"].as_str().map(str::to_owned)
     });
     let verified = registered.is_some();
-    let id = registered.or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())?;
+    let id = registered.or_else(crate::headless::session_id)?;
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return None;
     }

@@ -176,7 +176,8 @@ pub fn describe(tool_name: &str, input: &Value) -> Option<String> {
     }
     // A plain Bash call shows its command; any other field (a timeout, a
     // sandbox switch) shows the whole input.
-    let plain_bash = tool_name == "Bash" && call.as_object().is_some_and(|m| m.len() == 1);
+    let plain_bash =
+        tool_name.eq_ignore_ascii_case("bash") && call.as_object().is_some_and(|m| m.len() == 1);
     let shown = match call["command"].as_str() {
         Some(command) if plain_bash => command.to_owned(),
         _ => serde_json::to_string_pretty(&call).ok()?,
@@ -204,6 +205,7 @@ fn question_text(
     tool_name: &str,
     shown: &str,
     blocked: Option<&str>,
+    suggestion: Option<&str>,
     code: &str,
     wait: Duration,
 ) -> String {
@@ -214,8 +216,11 @@ fn question_text(
             one_line(reason)
         )
     });
+    let suggested = suggestion.map_or(String::new(), |verdict| {
+        format!("\nClassifier (logging only): {}", one_line(verdict))
+    });
     format!(
-        "**@{nick}** asks to use **{tool_name}**:\n{shown}{why}\n\n\
+        "**@{nick}** asks to use **{tool_name}**:\n{shown}{why}{suggested}\n\n\
          {QUESTION_SENTENCE}, or reply `yes {code}` / `no {code}`. \
          No answer within {} means deny.",
         duration_text(wait),
@@ -228,6 +233,8 @@ pub struct Request<'a> {
     pub input: &'a Value,
     /// Why the auto-mode classifier blocked the call, for a blocked call.
     pub blocked: Option<&'a str>,
+    /// What goniec's own classifier suggests, on a pi bot in logging mode.
+    pub suggestion: Option<&'a str>,
 }
 
 /// Ask the trusted user and wait for the answer.
@@ -243,6 +250,7 @@ pub async fn ask(
         tool_name,
         input,
         blocked,
+        suggestion,
     } = *request;
     let default_wait = if blocked.is_some() {
         WAIT_BLOCKED
@@ -274,7 +282,7 @@ pub async fn ask(
     // Register before asking, so that even an instant answer is in the queue.
     let queue = client.register_for(&["message", "reaction"]).await?;
     let code = new_code();
-    let question = question_text(nick, tool_name, &shown, blocked, &code, wait);
+    let question = question_text(nick, tool_name, &shown, blocked, suggestion, &code, wait);
     let message_id = post(&client, place, trusted_user_id, &question).await?;
     // Without the reactions, the typed answer still works.
     for name in [ALLOW_NAME, DENY_NAME] {
@@ -338,6 +346,7 @@ pub async fn verify(client: &Client, check: &Check<'_>) -> Result<bool> {
         check.request.tool_name,
         &shown,
         check.request.blocked,
+        check.request.suggestion,
         check.code,
         check.wait,
     );
@@ -527,6 +536,7 @@ mod tests {
             "Bash",
             &shown,
             Some("line one\n```spoiler\nhidden"),
+            None,
             "ae65",
             WAIT_BLOCKED,
         );
@@ -537,5 +547,7 @@ mod tests {
              React ✅ to allow or ❌ to deny, or reply `yes ae65` / `no ae65`. \
              No answer within 5 minutes means deny."
         );
+        let suggested = question_text("qwen", "bash", &shown, None, Some("yes"), "ae65", WAIT);
+        assert!(suggested.contains("```\nClassifier (logging only): yes\n\nReact"));
     }
 }

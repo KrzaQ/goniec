@@ -139,9 +139,7 @@ async fn run(cli: Cli) -> Result<()> {
             let inbox = Inbox::open(&id.nick)?;
             // Only the threads of this conversation, or threads without an
             // owner. Claude Code names the conversation in the Bash tool.
-            let session = std::env::var("CLAUDE_CODE_SESSION_ID")
-                .ok()
-                .filter(|s| !s.is_empty());
+            let session = goniec::headless::session_id();
             let table = threads::load(&id.nick)?;
             // In a headless session the trusted user's messages are the
             // responder's prompt, not data to read.

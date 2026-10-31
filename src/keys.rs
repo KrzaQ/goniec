@@ -33,6 +33,24 @@ pub struct Keys {
     /// `~/.local/bin/claude`, because a service's PATH may not have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_path: Option<String>,
+    /// Bots that run on pi with a local model, by nickname, not on Claude
+    /// Code. See `pi.rs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pi: Vec<String>,
+    /// The `pi` binary. Default: `~/.local/bin/pi`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_path: Option<String>,
+    /// The local model server's OpenAI-compatible URL. Default:
+    /// `http://localhost:11434/v1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_url: Option<String>,
+    /// The base model of pi bots. Default: `qwen3.8-27b`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_model: Option<String>,
+    /// The classifier of pi bots. `log` records its verdicts next to the
+    /// user's answers and decides nothing. See `gate.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier: Option<String>,
     #[serde(default)]
     pub bots: BTreeMap<String, Bot>,
 }
@@ -87,6 +105,11 @@ impl Keys {
     /// Every new thread of this bot gets a new headless conversation.
     pub fn dispatches(&self, nick: &str) -> bool {
         self.dispatch.iter().any(|n| n == nick)
+    }
+
+    /// This bot runs on pi, not on Claude Code.
+    pub fn on_pi(&self, nick: &str) -> bool {
+        self.pi.iter().any(|n| n == nick)
     }
 
     /// The responder may start headless sessions for this bot.

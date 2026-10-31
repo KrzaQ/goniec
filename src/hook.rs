@@ -275,6 +275,23 @@ pub fn pretool() -> i32 {
     0
 }
 
+/// For a pi bot's gate extension: decide about one tool call and print the
+/// decision. An error denies the call.
+pub fn gate() -> i32 {
+    let input = read_input();
+    let decided = tokio::runtime::Runtime::new()
+        .map_err(anyhow::Error::from)
+        .and_then(|runtime| {
+            runtime.block_on(crate::gate::decide(&input.tool_name, &input.tool_input))
+        });
+    let decision = decided.unwrap_or_else(|e| {
+        log("gate", &e);
+        crate::gate::decision(false, "the permission gate failed, so the call is denied")
+    });
+    println!("{decision}");
+    0
+}
+
 /// The session's bot and the trusted user, for asking and checking.
 fn approver() -> Result<Option<(Keys, String, u64)>> {
     let dir = binding::session_dir()?;
@@ -315,6 +332,7 @@ fn ask_trusted_user(
             tool_name: &input.tool_name,
             input: &input.tool_input,
             blocked,
+            suggestion: None,
         },
     ))?;
     Ok(Some((outcome, place)))
@@ -331,6 +349,7 @@ fn approved_in_zulip(input: &Input, question: &grants::Question) -> Result<bool>
         tool_name: &input.tool_name,
         input: &input.tool_input,
         blocked: Some(&question.reason),
+        suggestion: None,
     };
     let check = approve::Check {
         nick: &nick,
@@ -395,6 +414,7 @@ pub fn run(event: Option<&str>) -> i32 {
         Some("permission") => permission(),
         Some("denied") => denied(),
         Some("pretool") => pretool(),
+        Some("gate") => gate(),
         Some("end") => end(),
         other => {
             log("dispatch", &anyhow::anyhow!("unknown hook event {other:?}"));

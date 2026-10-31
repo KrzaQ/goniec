@@ -14,6 +14,17 @@ pub fn active() -> bool {
     std::env::var_os("GONIEC_HEADLESS").is_some_and(|v| v == "1")
 }
 
+/// The conversation this process belongs to: Claude Code sets
+/// `CLAUDE_CODE_SESSION_ID` in its Bash tool, and goniec sets
+/// `GONIEC_SESSION_ID` for a pi session. A command can change either, so
+/// this only says where to save and what to read, never what is allowed.
+pub fn session_id() -> Option<String> {
+    ["CLAUDE_CODE_SESSION_ID", "GONIEC_SESSION_ID"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|id| !id.is_empty())
+}
+
 /// The thread of the current turn of a headless session: the responder
 /// writes it to the file named by `GONIEC_REPLY_TO_FILE` before each turn.
 pub fn current_thread() -> Option<String> {
