@@ -570,10 +570,18 @@ goniec's own would rebuild pi's tool loop, compaction and sessions.
   message starts the conversation again on the new one, with its context
   (tested live: 25 s with the reload). `!new` keeps the thread's model.
 - **One process per pi bot.** A model fills most of the one GPU.
-- **Compaction** is pi's own: it starts at the window minus 16,384 tokens,
-  keeps the last 20k tokens and summarizes the rest with the session's
-  model. The session file keeps everything. The answer waits for
-  `agent_settled`, so a compaction only makes a turn longer.
+- **Compaction** is pi's own: it keeps the last 20k tokens and summarizes
+  the rest with the session's model. The session file keeps everything.
+  The answer waits for `agent_settled`, so a compaction only makes a turn
+  longer. It starts at the same points as the user's chat in Open WebUI:
+  80,000, 175,000 and 240,000 tokens (`compaction.modelOverrides` in
+  `<state>/pi/agent/settings.json`), about 18k to 22k free. The headroom
+  absorbs one response, and the longest measured one used 6,416 tokens of
+  thinking, so it does not grow with the window. Ollama answers an
+  over-long prompt with HTTP 400 since 0.40, not by cutting it; pi's
+  overflow check matches that text, so pi compacts and retries. After a
+  compaction the next turn pays a full prefill, about 0.7 ms per token: over
+  a minute at 96k, more than two at 192k.
 - **Memory.** pi has no auto memory. `@qwen` made its own when the user
   asked it to remember something: a `MEMORY.md`, and a line in its
   `CLAUDE.md` that says to read it.

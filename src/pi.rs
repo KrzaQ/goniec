@@ -54,6 +54,17 @@ const SIZES: [(&str, &str, u64, &[&str]); 3] = [
     ("262", "-262k", 262_144, &["", "unc", "oblit"]),
 ];
 
+/// Where compaction starts, per context size, in tokens: the same points as
+/// the user's chat in Open WebUI. The headroom absorbs one response, whose
+/// only unbounded part is its thinking, so it does not grow with the window.
+fn compact_at(window: u64) -> u64 {
+    match window {
+        98_304 => 80_000,
+        196_608 => 175_000,
+        _ => 240_000,
+    }
+}
+
 /// The variant a bot starts with.
 const DEFAULT_VARIANT: &str = "192";
 
@@ -178,6 +189,24 @@ fn models_json(keys: &Keys) -> Value {
     } } })
 }
 
+/// pi's `settings.json`: per-model compaction. Ollama answers an over-long
+/// prompt with an error since 0.40, not by cutting it, so compaction must
+/// start in time. pi compacts and retries on that error too.
+fn settings_json(keys: &Keys) -> Value {
+    let overrides: serde_json::Map<String, Value> = SIZES
+        .iter()
+        .flat_map(|(_, suffix, tokens, flavors)| {
+            flavors.iter().map(move |flavor| {
+                (
+                    format!("{PROVIDER}/{}", model_id(base(keys), suffix, flavor)),
+                    json!({ "reserveTokens": tokens - compact_at(*tokens) }),
+                )
+            })
+        })
+        .collect();
+    json!({ "compaction": { "modelOverrides": overrides } })
+}
+
 /// The provider name in `models.json`.
 pub const PROVIDER: &str = "local";
 
@@ -198,6 +227,10 @@ pub fn prepare(keys: &Keys) -> Result<Setup> {
     write_file(
         &agent_dir.join("models.json"),
         serde_json::to_string_pretty(&models_json(keys))?.as_bytes(),
+    )?;
+    write_file(
+        &agent_dir.join("settings.json"),
+        serde_json::to_string_pretty(&settings_json(keys))?.as_bytes(),
     )?;
     Ok(Setup {
         gate: root.join("gate.ts"),
@@ -287,6 +320,19 @@ mod tests {
             .collect();
         assert_eq!(ids.len(), 8);
         assert!(ids.contains(&"qwen3.8-27b-oblit-262k"));
+    }
+
+    #[test]
+    fn compaction_matches_the_chat() {
+        let settings = settings_json(&keys());
+        let reserve = |model: &str| {
+            settings["compaction"]["modelOverrides"][format!("{PROVIDER}/{model}")]["reserveTokens"]
+                .as_u64()
+                .unwrap()
+        };
+        assert_eq!(98_304 - reserve("qwen3.8-27b-unc-96k"), 80_000);
+        assert_eq!(196_608 - reserve("qwen3.8-27b"), 175_000);
+        assert_eq!(262_144 - reserve("qwen3.8-27b-oblit-262k"), 240_000);
     }
 
     #[test]
