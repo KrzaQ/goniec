@@ -1,9 +1,11 @@
 //! The permission gate for pi bots: `goniec hook gate`, called for every
 //! tool call.
 //!
-//! Fixed rules come first. Read-only tools and plain `goniec send` or `read`
-//! pass. Everything else asks the trusted user, as Claude's permission flow
-//! does.
+//! Fixed rules come first. Read-only tools pass inside the session's own
+//! directories, and a plain `goniec read` or a `goniec send` to the session's
+//! own thread passes. Everything else asks the trusted user. The exemptions
+//! are an allowlist on purpose: a list of secret paths can never be complete,
+//! and a session that reads a token can post it.
 //!
 //! pi has no classifier, so goniec has its own: a separate query to the
 //! session's own model that sees only the trusted user's messages, taken
@@ -20,6 +22,7 @@
 
 use std::fs;
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -32,6 +35,8 @@ use crate::history;
 use crate::inbox;
 use crate::keys::Keys;
 use crate::pi;
+use crate::send::{self, Target};
+use crate::uploads;
 use crate::zulip::Client;
 
 const CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(30);
@@ -40,6 +45,51 @@ const CLASSIFIER_TIMEOUT: Duration = Duration::from_secs(30);
 /// of each.
 const USER_MESSAGES: usize = 12;
 const USER_MESSAGE_CHARS: usize = 2_000;
+
+/// What a session may reach without asking.
+pub struct Scope {
+    /// Its directory, and where its files from the chat go.
+    pub roots: Vec<PathBuf>,
+    /// The thread of the current turn: `#channel>topic` or `user:<id>`.
+    pub thread: Option<String>,
+    pub trusted_user_id: Option<u64>,
+}
+
+impl Scope {
+    /// The path is inside one of the roots, after following links and `..`.
+    /// A relative path starts at the first root. A path that does not exist
+    /// is not inside.
+    fn contains(&self, path: &str) -> bool {
+        let Some(first) = self.roots.first() else {
+            return false;
+        };
+        let expanded = match path.strip_prefix("~/") {
+            Some(rest) => std::env::home_dir().unwrap_or_default().join(rest),
+            None if path == "~" => std::env::home_dir().unwrap_or_default(),
+            None => first.join(path),
+        };
+        let Ok(real) = fs::canonicalize(expanded) else {
+            return false;
+        };
+        self.roots
+            .iter()
+            .filter_map(|root| fs::canonicalize(root).ok())
+            .any(|root| real.starts_with(root))
+    }
+
+    /// The target is the session's own thread, or the trusted user.
+    fn is_own_target(&self, target: &str) -> bool {
+        let Ok(target) = send::parse_target(target) else {
+            return false;
+        };
+        let own = self
+            .thread
+            .as_deref()
+            .and_then(|t| send::parse_target(t).ok());
+        Some(&target) == own.as_ref()
+            || matches!(target, Target::UserId(id) if Some(id) == self.trusted_user_id)
+    }
+}
 
 /// What the fixed rules say about a call.
 #[derive(Debug, PartialEq)]
@@ -92,11 +142,20 @@ const ALWAYS_ASK: [(&str, &str); 11] = [
 const SHELLS: [&str; 4] = ["sh", "bash", "zsh", "python"];
 
 fn path_of(input: &Value) -> String {
-    ["path", "file_path", "pattern"]
+    ["path", "file_path", "pattern", "glob"]
         .iter()
         .filter_map(|key| input[key].as_str())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// A glob that leaves the search root: `find` and `grep` take one next to
+/// their path.
+fn glob_escapes(input: &Value) -> bool {
+    ["pattern", "glob"]
+        .iter()
+        .filter_map(|key| input[key].as_str())
+        .any(|glob| glob.starts_with('/') || glob.starts_with('~') || glob.contains(".."))
 }
 
 fn is_sensitive(text: &str) -> bool {
@@ -128,17 +187,23 @@ fn is_single_command(command: &str) -> bool {
 }
 
 /// The fixed rules.
-pub fn rule(tool: &str, input: &Value) -> Rule {
+pub fn rule(tool: &str, input: &Value, scope: &Scope) -> Rule {
     let tool = tool.to_lowercase();
     match tool.as_str() {
         "read" | "grep" | "find" | "ls" => {
             if is_sensitive(&path_of(input)) {
-                Rule::AskAlways("it reads a sensitive path")
-            } else {
+                return Rule::AskAlways("it reads a sensitive path");
+            }
+            // No path means the working directory, the session's own.
+            let path = input["path"].as_str().unwrap_or(".");
+            let glob = tool != "read" && glob_escapes(input);
+            if scope.contains(path) && !glob {
                 Rule::Allow
+            } else {
+                Rule::Classify
             }
         }
-        "bash" => bash_rule(input["command"].as_str().unwrap_or("")),
+        "bash" => bash_rule(input["command"].as_str().unwrap_or(""), scope),
         _ => {
             let path = path_of(input);
             if is_sensitive(&path) {
@@ -152,7 +217,22 @@ pub fn rule(tool: &str, input: &Value) -> Rule {
     }
 }
 
-fn bash_rule(command: &str) -> Rule {
+/// The first word of a shell command line, without its quotes.
+fn first_word(text: &str) -> String {
+    let mut word = String::new();
+    let mut quote = None;
+    for c in text.trim_start().chars() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, c) if c.is_whitespace() => break,
+            _ => word.push(c),
+        }
+    }
+    word
+}
+
+fn bash_rule(command: &str, scope: &Scope) -> Rule {
     let trimmed = command.trim();
     if is_sensitive(trimmed) {
         return Rule::AskAlways("it touches a sensitive path");
@@ -176,11 +256,17 @@ fn bash_rule(command: &str) -> Rule {
             return Rule::AskAlways("it pipes into a shell");
         }
     }
-    let goniec = trimmed.starts_with("goniec send ")
-        || trimmed.starts_with("goniec read ")
-        || trimmed == "goniec read";
-    if goniec && is_single_command(trimmed) {
-        return Rule::Allow;
+    if is_single_command(trimmed) {
+        if trimmed == "goniec read" || trimmed.starts_with("goniec read ") {
+            return Rule::Allow;
+        }
+        // To another target it goes to the user: a session should not be
+        // able to carry what it read somewhere else unasked.
+        if let Some(rest) = trimmed.strip_prefix("goniec send ")
+            && scope.is_own_target(&first_word(rest))
+        {
+            return Rule::Allow;
+        }
     }
     Rule::Classify
 }
@@ -310,6 +396,19 @@ fn append_log(entry: &LogEntry<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The scope of the session this process belongs to. The session ID comes
+/// from the environment of the pi process, which a session's bash tool
+/// cannot change for the gate.
+fn session_scope(dir: &Path, trusted_user_id: Option<u64>) -> Scope {
+    let mut roots = vec![dir.to_owned()];
+    roots.extend(crate::headless::session_id().map(|id| uploads::files_dir(dir, &id)));
+    Scope {
+        roots,
+        thread: crate::headless::current_thread(),
+        trusted_user_id,
+    }
+}
+
 /// The gate's decision, as the pi extension reads it.
 pub fn decision(allow: bool, reason: &str) -> Value {
     json!({ "allow": allow, "reason": reason })
@@ -317,10 +416,6 @@ pub fn decision(allow: bool, reason: &str) -> Value {
 
 /// Decide about one tool call in a headless pi session.
 pub async fn decide(tool: &str, input: &Value) -> Result<Value> {
-    let rule = rule(tool, input);
-    if rule == Rule::Allow {
-        return Ok(decision(true, ""));
-    }
     let dir = binding::session_dir()?;
     let Some(binding) = binding::find(&dir)? else {
         return Ok(decision(
@@ -329,6 +424,11 @@ pub async fn decide(tool: &str, input: &Value) -> Result<Value> {
         ));
     };
     let keys = Keys::load()?;
+    let scope = session_scope(&dir, keys.trusted_user_id);
+    let rule = rule(tool, input, &scope);
+    if rule == Rule::Allow {
+        return Ok(decision(true, ""));
+    }
     let bot = keys.bot(&binding.nick)?;
     let Some(trusted) = keys.trusted_user_id else {
         return Ok(decision(false, "no trusted user, so nobody can approve"));
@@ -393,43 +493,120 @@ pub async fn decide(tool: &str, input: &Value) -> Result<Value> {
 mod tests {
     use super::*;
 
+    /// A session directory with a file in it, and a file next to it.
+    fn scope(name: &str) -> (PathBuf, Scope) {
+        let base = std::env::temp_dir().join(format!("goniec-gate-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("session");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.rs"), "x").unwrap();
+        fs::write(base.join("outside.txt"), "x").unwrap();
+        let scope = Scope {
+            roots: vec![dir],
+            thread: Some("#ops>goniec test".into()),
+            trusted_user_id: Some(8),
+        };
+        (base, scope)
+    }
+
     fn bash(command: &str) -> Rule {
-        rule("bash", &json!({ "command": command }))
+        let scope = Scope {
+            roots: Vec::new(),
+            thread: Some("#ops>x".into()),
+            trusted_user_id: Some(8),
+        };
+        rule("bash", &json!({ "command": command }), &scope)
     }
 
     #[test]
-    fn read_only_tools_pass_unless_sensitive() {
-        assert_eq!(rule("read", &json!({ "path": "src/main.rs" })), Rule::Allow);
-        assert_eq!(rule("ls", &json!({ "path": "." })), Rule::Allow);
+    fn read_only_tools_pass_only_inside_the_session() {
+        let (base, scope) = scope("read");
+        let read = |path: &str| rule("read", &json!({ "path": path }), &scope);
+        assert_eq!(read("src/main.rs"), Rule::Allow);
+        let inside = scope.roots[0].join("src/main.rs");
+        assert_eq!(read(inside.to_str().unwrap()), Rule::Allow);
+        assert_eq!(rule("ls", &json!({}), &scope), Rule::Allow);
+        assert_eq!(rule("ls", &json!({ "path": "src" }), &scope), Rule::Allow);
+        // Everything outside asks, also what no list of secrets names.
+        assert_eq!(read("../outside.txt"), Rule::Classify);
+        assert_eq!(read("/etc/hostname"), Rule::Classify);
+        assert_eq!(read("~/.config/gh/hosts.yml"), Rule::Classify);
+        assert_eq!(read("no-such-file"), Rule::Classify);
+        assert_eq!(
+            rule(
+                "grep",
+                &json!({ "pattern": "api_key", "path": "~" }),
+                &scope
+            ),
+            Rule::Classify
+        );
+        #[cfg(unix)]
+        {
+            let link = scope.roots[0].join("link");
+            std::os::unix::fs::symlink(base.join("outside.txt"), &link).unwrap();
+            assert_eq!(read("link"), Rule::Classify);
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn globs_stay_under_their_root() {
+        let (base, scope) = scope("glob");
+        let find = |pattern: &str| rule("find", &json!({ "pattern": pattern }), &scope);
+        assert_eq!(find("*.rs"), Rule::Allow);
+        assert_eq!(find("../**"), Rule::Classify);
+        assert_eq!(find("/home/**"), Rule::Classify);
+        assert_eq!(
+            rule("grep", &json!({ "pattern": "x", "glob": "../*" }), &scope),
+            Rule::Classify
+        );
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn sensitive_paths_always_ask_even_inside() {
+        let (base, scope) = scope("sensitive");
+        fs::write(scope.roots[0].join(".env"), "x").unwrap();
         assert!(matches!(
-            rule("read", &json!({ "path": "/home/k/.ssh/id_ed25519" })),
+            rule("read", &json!({ "path": ".env" }), &scope),
             Rule::AskAlways(_)
         ));
         assert!(matches!(
             rule(
                 "read",
-                &json!({ "path": "/home/k/.config/secrets/goniec.toml" })
+                &json!({ "path": "/home/k/.ssh/id_ed25519" }),
+                &scope
             ),
             Rule::AskAlways(_)
         ));
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
-    fn plain_goniec_passes() {
+    fn goniec_passes_only_to_its_own_thread() {
         assert_eq!(bash("goniec read"), Rule::Allow);
         assert_eq!(bash("goniec read '#ops>x' -n 5"), Rule::Allow);
         assert_eq!(bash("goniec send '#ops>x' 'a; b | c'"), Rule::Allow);
         assert_eq!(bash("goniec send '#ops>x' \"it's fine\""), Rule::Allow);
+        assert_eq!(bash("goniec send user:8 hello"), Rule::Allow);
+        // Anywhere else goes to the user.
+        assert_eq!(bash("goniec send '#ops>other' hello"), Rule::Classify);
+        assert_eq!(bash("goniec send user:9 hello"), Rule::Classify);
+        assert_eq!(bash("goniec send @phoenix hello"), Rule::Classify);
+        assert_eq!(
+            bash("goniec send --attach f '#ops>x' hello"),
+            Rule::Classify
+        );
     }
 
     #[test]
     fn goniec_does_not_smuggle_a_second_command() {
         assert_eq!(bash("goniec read; cat /etc/passwd"), Rule::Classify);
-        assert_eq!(bash("goniec send x \"$(cat f)\""), Rule::Classify);
-        assert_eq!(bash("goniec send x `cat f`"), Rule::Classify);
-        assert_eq!(bash("goniec send x hello > out"), Rule::Classify);
+        assert_eq!(bash("goniec send '#ops>x' \"$(cat f)\""), Rule::Classify);
+        assert_eq!(bash("goniec send '#ops>x' `cat f`"), Rule::Classify);
+        assert_eq!(bash("goniec send '#ops>x' hello > out"), Rule::Classify);
         assert_eq!(bash("goniec read\ncat f"), Rule::Classify);
-        assert_eq!(bash("goniec send x 'unclosed"), Rule::Classify);
+        assert_eq!(bash("goniec send '#ops>x' 'unclosed"), Rule::Classify);
         assert_eq!(bash("goniec-evil read"), Rule::Classify);
     }
 
@@ -454,26 +631,42 @@ mod tests {
 
     #[test]
     fn changing_the_instructions_always_asks() {
-        assert_eq!(rule("read", &json!({ "path": "CLAUDE.md" })), Rule::Allow);
+        let (base, scope) = scope("instructions");
+        fs::write(scope.roots[0].join("CLAUDE.md"), "x").unwrap();
+        assert_eq!(
+            rule("read", &json!({ "path": "CLAUDE.md" }), &scope),
+            Rule::Allow
+        );
         for tool in ["edit", "write"] {
             assert!(matches!(
-                rule(tool, &json!({ "path": "/home/k/misc/qwen/CLAUDE.md" })),
+                rule(
+                    tool,
+                    &json!({ "path": "/home/k/misc/qwen/CLAUDE.md" }),
+                    &scope
+                ),
                 Rule::AskAlways(_)
             ));
         }
         assert!(matches!(bash("echo x >> CLAUDE.md"), Rule::AskAlways(_)));
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
     fn the_rest_goes_to_the_classifier() {
+        let (base, scope) = scope("rest");
         assert_eq!(bash("df -h /storage"), Rule::Classify);
         assert_eq!(bash("git push origin main"), Rule::Classify);
         assert_eq!(bash("rmdir empty"), Rule::Classify);
         assert_eq!(
-            rule("write", &json!({ "path": "notes.md", "content": "x" })),
+            rule(
+                "write",
+                &json!({ "path": "notes.md", "content": "x" }),
+                &scope
+            ),
             Rule::Classify
         );
-        assert_eq!(rule("something_new", &json!({})), Rule::Classify);
+        assert_eq!(rule("something_new", &json!({}), &scope), Rule::Classify);
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -500,5 +693,12 @@ mod tests {
         assert!(is_single_command("echo \"a;b\""));
         assert!(!is_single_command("echo a;b"));
         assert!(!is_single_command("echo 'open"));
+    }
+
+    #[test]
+    fn first_words() {
+        assert_eq!(first_word("'#ops>my topic' text"), "#ops>my topic");
+        assert_eq!(first_word("user:8 text"), "user:8");
+        assert_eq!(first_word("\"#a>b\""), "#a>b");
     }
 }

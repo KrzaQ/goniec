@@ -540,14 +540,20 @@ goniec's own would rebuild pi's tool loop, compaction and sessions.
   tool call. Measured on 2026-10-31: the handler may wait as long as it
   likes, a handler that throws blocks the call, and pi exits at once if the
   extension is missing or broken. So the gate cannot be silently absent.
-- **Fixed rules** (`gate::rule`), plain string matching. Read-only tools and
-  a plain `goniec send` or `goniec read` pass. Paths with secrets, changes
-  to `CLAUDE.md` or `AGENTS.md`, and a short list of commands (`sudo`,
-  `docker`, force pushes, pipes into a shell and so on) always ask, whatever
-  a classifier says. Everything else goes to the classifier's step. The
-  matching stops honest calls and mistakes, not a determined evasion:
-  `cat ~/.s*h/config` does not contain `.ssh`. Before a verdict may decide
-  anything, globs and variables in a command must count as a reason to ask.
+- **Fixed rules** (`gate::rule`). What runs without asking is an allowlist:
+  `read`, `grep`, `find` and `ls` inside the session directory and its chat
+  files, after following links and `..`; a plain `goniec read`; and a
+  `goniec send` to the session's own thread or to the trusted user. A list
+  of secret paths can never be complete, and a session that reads a token
+  can post it, as the dotfiles session's review showed with
+  `~/.config/gh/hosts.yml`. Paths with secrets (also inside the directory,
+  like `.env`), changes to `CLAUDE.md` or `AGENTS.md`, and a short list of
+  commands (`sudo`, `docker`, force pushes, pipes into a shell and so on)
+  always ask, whatever a classifier says. Everything else goes to the
+  classifier's step. The command list is string matching. It stops honest
+  calls and mistakes, not a determined evasion: `cat ~/.s*h/config` does not
+  contain `.ssh`. Before a verdict may decide anything, globs and variables
+  in a command must count as a reason to ask.
 - **The classifier** is the user's design (2026-10-31): a separate query to
   the session's own model, which sees only the trusted user's messages to
   this bot and the call. It never sees tool output, so a file or a web page
