@@ -137,6 +137,7 @@ fn take_mine(
         let owner = threads::Owner {
             session_id: id.to_owned(),
             dir: binding::session_dir()?,
+            model: None,
         };
         threads::claim(nick, &taken, &owner)?;
     }

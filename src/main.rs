@@ -152,6 +152,7 @@ async fn run(cli: Cli) -> Result<()> {
                 let owner = threads::Owner {
                     session_id: session.clone(),
                     dir: dir.clone(),
+                    model: None,
                 };
                 threads::claim(&id.nick, &records, &owner)?;
             }

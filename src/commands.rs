@@ -22,6 +22,12 @@ pub enum Command {
     Headless(String),
     /// The bot's interactive session takes the thread.
     Interactive,
+    /// Choose the thread's model, on a pi bot. Without words, show it.
+    Model(String),
+    /// Interrupt the running turn, on a pi bot.
+    Stop,
+    /// Forget the thread's conversation: the next message starts a new one.
+    New,
     Unknown(String),
 }
 
@@ -34,13 +40,16 @@ impl Command {
             Command::Restart => "restart",
             Command::Headless(_) => "headless",
             Command::Interactive => "interactive",
+            Command::Model(_) => "model",
+            Command::Stop => "stop",
+            Command::New => "new",
             Command::Unknown(word) => word,
         }
     }
 }
 
 /// The commands, for the answer to an unknown one.
-pub const HELP: &str = "`!status`, `!restart`, `!headless [text]`, `!interactive`";
+pub const HELP: &str = "`!status`, `!restart`, `!headless [text]`, `!interactive`, `!new`, `!stop`, `!model [size] [flavor]`";
 
 /// A command, sent by a bot's listener to the responder.
 pub struct Order {
@@ -59,6 +68,9 @@ pub fn parse(content: &str) -> Option<Command> {
         "restart" => Command::Restart,
         "headless" => Command::Headless(rest.trim().to_owned()),
         "interactive" => Command::Interactive,
+        "model" => Command::Model(rest.trim().to_owned()),
+        "stop" => Command::Stop,
+        "new" => Command::New,
         _ => Command::Unknown(word.to_owned()),
     })
 }
@@ -80,6 +92,13 @@ mod tests {
         );
         assert_eq!(parse("!headless"), Some(Command::Headless(String::new())));
         assert_eq!(parse("!interactive"), Some(Command::Interactive));
+        assert_eq!(
+            parse("@**qwen** !model 96 unc"),
+            Some(Command::Model("96 unc".into()))
+        );
+        assert_eq!(parse("!model"), Some(Command::Model(String::new())));
+        assert_eq!(parse("!stop"), Some(Command::Stop));
+        assert_eq!(parse("!new"), Some(Command::New));
         assert_eq!(parse("!quit"), Some(Command::Unknown("quit".into())));
         assert_eq!(parse("@**series** check this!"), None);
         assert_eq!(parse("hello !status"), None);

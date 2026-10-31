@@ -23,6 +23,10 @@ use crate::inbox::{self, Record, reply_target};
 pub struct Owner {
     pub session_id: String,
     pub dir: PathBuf,
+    /// The model a pi bot's thread runs, from `!model`. None means the
+    /// default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 pub type Table = BTreeMap<String, Owner>;
@@ -76,6 +80,14 @@ pub fn claim(nick: &str, records: &[Record], owner: &Owner) -> Result<()> {
 pub fn set(nick: &str, key: &str, owner: &Owner) -> Result<()> {
     update(nick, |table| {
         table.insert(key.to_owned(), owner.clone());
+    })
+}
+
+/// Forget thread `key`'s owner, so the next message starts a new
+/// conversation: the trusted user's `!new`.
+pub fn remove(nick: &str, key: &str) -> Result<()> {
+    update(nick, |table| {
+        table.remove(key);
     })
 }
 
@@ -136,6 +148,7 @@ mod tests {
             Owner {
                 session_id: "a".into(),
                 dir: "/p".into(),
+                model: None,
             },
         );
         assert!(may_take(&table, &r, Some("a"), true));

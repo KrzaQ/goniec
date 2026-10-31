@@ -29,6 +29,7 @@ use crate::config;
 use crate::headless;
 use crate::inbox::{self, Inbox, Record};
 use crate::keys::{Bot, Keys};
+use crate::pi;
 use crate::send::{self, Target};
 use crate::sessions::{self, Entry};
 use crate::threads::{self, Owner, Table};
@@ -49,8 +50,13 @@ const IDLE_END: Duration = Duration::from_secs(15 * 60);
 const MAX_PER_BOT: usize = 3;
 const MAX_PER_DISPATCHER: usize = 5;
 
+/// A pi bot's model fills most of the one GPU, so it runs one at a time.
+const MAX_PER_PI_BOT: usize = 1;
+
 fn limit(keys: &Keys, nick: &str) -> usize {
-    if keys.dispatches(nick) {
+    if keys.on_pi(nick) {
+        MAX_PER_PI_BOT
+    } else if keys.dispatches(nick) {
         MAX_PER_DISPATCHER
     } else {
         MAX_PER_BOT
@@ -86,6 +92,8 @@ struct State {
     exited: bool,
     turns: u32,
     last_turn_end: Option<Instant>,
+    /// On pi, the conversation's size in tokens after the last run.
+    context_tokens: Option<u64>,
 }
 
 /// A headless process running one conversation.
@@ -95,8 +103,11 @@ struct Conversation {
     dir: PathBuf,
     /// The bot's client, to save the files of the user's messages.
     files_client: Client,
-    /// `config::fingerprint` when the process started.
-    config: u64,
+    /// `config::fingerprint` when the process started. None on pi: goniec
+    /// writes pi's whole config itself.
+    config: Option<u64>,
+    /// The model of a pi process; None means a Claude Code process.
+    pi_model: Option<String>,
     /// End the process after its current turn, for this reason: `!restart`,
     /// a new configuration, or a thread that went elsewhere.
     end_after_turn: Option<&'static str>,
@@ -125,6 +136,9 @@ pub struct Responder {
     running: HashMap<String, Conversation>,
     /// Conversations whose process ended without finishing a turn.
     failed: HashMap<String, Instant>,
+    /// The last known size of pi conversations, in tokens, also after their
+    /// process ended.
+    context_tokens: HashMap<String, u64>,
 }
 
 impl Responder {
@@ -171,6 +185,9 @@ impl Responder {
         for id in ended {
             let mut conv = self.running.remove(&id).expect("listed above");
             let _ = conv.child.wait().await;
+            if let Some(tokens) = conv.state.lock().unwrap().context_tokens {
+                self.context_tokens.insert(id.clone(), tokens);
+            }
             if conv.state.lock().unwrap().turns == 0 {
                 self.failed.insert(id.clone(), Instant::now());
                 log(
@@ -221,6 +238,7 @@ impl Responder {
             let owner = Owner {
                 session_id: id.clone(),
                 dir: dir.to_owned(),
+                model: None,
             };
             threads::claim(nick, records, &owner)?;
             table = threads::load(nick)?;
@@ -239,10 +257,18 @@ impl Responder {
                     continue;
                 }
                 // A conversation that never finished a turn has no
-                // transcript to resume.
+                // transcript to resume. pi takes the same flag for both.
                 let new = config::transcript(id).is_none();
-                let conv = spawn(keys, nick, cdir, id, new).await?;
-                let how = if new { "started" } else { "resumed" };
+                let model = table
+                    .values()
+                    .find(|o| o.session_id == *id)
+                    .and_then(|o| o.model.clone());
+                let conv = spawn(keys, nick, cdir, id, new, model).await?;
+                let how = match (keys.on_pi(nick), new) {
+                    (true, _) => "running",
+                    (false, true) => "started",
+                    (false, false) => "resumed",
+                };
                 let pid = conv.child.id().unwrap_or(0);
                 log(nick, format!("{how} conversation {id} (pid {pid})"));
                 self.running.insert(id.clone(), conv);
@@ -258,7 +284,11 @@ impl Responder {
                 // MCP servers, plugins and the version load only at start: a
                 // process with an old configuration ends, and the next tick
                 // resumes the conversation with the new one.
-                if config::fingerprint(&conv.dir, &config::claude_path(keys)?) != conv.config {
+                let changed = match conv.config {
+                    Some(old) => config::fingerprint(&conv.dir, &config::claude_path(keys)?) != old,
+                    None => false,
+                };
+                if changed {
                     conv.end_after_turn = Some("its configuration changed");
                 } else {
                     feed(conv, id, &inbox, &table, keys.trusted_user_id).await?;
@@ -300,7 +330,11 @@ impl Responder {
             record,
             command,
         } = order;
-        let answer = match self.run_command(keys, &nick, &record, command) {
+        let result = match command {
+            ChatCommand::Stop => self.stop(&nick, &record).await,
+            command => self.run_command(keys, &nick, &record, command),
+        };
+        let answer = match result {
             Ok(text) => text,
             Err(e) => format!("⚠ {e:#}"),
         };
@@ -315,6 +349,33 @@ impl Responder {
         if let Err(e) = posted {
             log(&nick, format!("cannot answer a command: {e:#}"));
         }
+    }
+
+    /// `!stop`: interrupt the thread's running turn. pi has an RPC command
+    /// for it; on Claude Code goniec has none yet.
+    async fn stop(&mut self, nick: &str, record: &Record) -> Result<String> {
+        let thread = threads::key(record);
+        let table = threads::load(nick)?;
+        let conv = table
+            .get(&thread)
+            .and_then(|o| self.running.get_mut(&o.session_id));
+        let Some(conv) = conv else {
+            return Ok("Nothing runs in this thread.".to_owned());
+        };
+        if conv.pi_model.is_none() {
+            return Ok("`!stop` works only on pi bots so far.".to_owned());
+        }
+        if !conv.busy() {
+            return Ok("Nothing runs in this thread.".to_owned());
+        }
+        let stdin = conv
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("the conversation's input is closed"))?;
+        let line = serde_json::json!({ "type": "abort" });
+        stdin.write_all(format!("{line}\n").as_bytes()).await?;
+        stdin.flush().await?;
+        Ok("Stopping the current turn.".to_owned())
     }
 
     fn run_command(
@@ -377,6 +438,7 @@ impl Responder {
                         let new = Owner {
                             session_id: uuid::Uuid::new_v4().to_string(),
                             dir,
+                            model: None,
                         };
                         threads::set(nick, &thread, &new)?;
                         let mut answer = format!(
@@ -434,6 +496,7 @@ impl Responder {
                     &Owner {
                         session_id: session.session_id.clone(),
                         dir: session.dir.clone(),
+                        model: None,
                     },
                 )?;
                 if let Some(conv) = owner
@@ -471,6 +534,78 @@ impl Responder {
                     session.dir.display()
                 ))
             }
+            ChatCommand::New => {
+                let Some(owner) = owner else {
+                    return Ok("This thread has no conversation yet.".to_owned());
+                };
+                if interactive(&owner.session_id).is_some() {
+                    return Ok(format!(
+                        "Conversation `{}` runs in an interactive session, and it would lose \
+                         this thread. `!headless` moves the thread instead.",
+                        owner.session_id
+                    ));
+                }
+                if let Some(conv) = self.running.get_mut(&owner.session_id) {
+                    conv.end_after_turn = Some("!new");
+                }
+                // The thread's model is the thread's, so it stays.
+                match &owner.model {
+                    Some(_) => threads::set(
+                        nick,
+                        &thread,
+                        &Owner {
+                            session_id: uuid::Uuid::new_v4().to_string(),
+                            ..owner.clone()
+                        },
+                    )?,
+                    None => threads::remove(nick, &thread)?,
+                }
+                Ok(format!(
+                    "This thread left conversation `{}`. Your next message starts a new one.",
+                    owner.session_id
+                ))
+            }
+            ChatCommand::Model(words) => {
+                if !keys.on_pi(nick) {
+                    return Ok(format!(
+                        "@{nick} runs on Claude Code. `!model` is for pi bots."
+                    ));
+                }
+                if words.is_empty() {
+                    let current = owner
+                        .and_then(|o| o.model)
+                        .unwrap_or_else(|| pi::default_model(keys));
+                    return Ok(format!("This thread runs `{current}`. {}", pi::usage()));
+                }
+                let model = pi::parse_model(keys, &words)?;
+                let owner = match owner {
+                    Some(owner) => owner,
+                    None => Owner {
+                        session_id: uuid::Uuid::new_v4().to_string(),
+                        dir: keys
+                            .bot(nick)?
+                            .dir
+                            .clone()
+                            .ok_or_else(|| anyhow!("@{nick} has no directory"))?,
+                        model: None,
+                    },
+                };
+                // A process keeps its model, and a variant is a reload
+                // anyway: the next message starts the conversation again.
+                if let Some(conv) = self.running.get_mut(&owner.session_id) {
+                    conv.end_after_turn = Some("!model");
+                }
+                threads::set(
+                    nick,
+                    &thread,
+                    &Owner {
+                        model: Some(model.clone()),
+                        ..owner
+                    },
+                )?;
+                Ok(format!("This thread now runs `{model}`."))
+            }
+            ChatCommand::Stop => unreachable!("handled in `command`"),
             ChatCommand::Unknown(word) => Ok(format!(
                 "Unknown command `!{word}`. Commands: {}.",
                 commands::HELP
@@ -532,6 +667,26 @@ impl Responder {
                 ));
             }
         }
+        if keys.on_pi(nick) {
+            let model = owner
+                .and_then(|o| o.model.clone())
+                .unwrap_or_else(|| pi::default_model(keys));
+            let window = pi::window(&model);
+            let used = owner.and_then(|o| {
+                let running = self.running.get(&o.session_id);
+                running
+                    .and_then(|c| c.state.lock().unwrap().context_tokens)
+                    .or_else(|| self.context_tokens.get(&o.session_id).copied())
+            });
+            out.push_str(&format!("- model: `{model}`\n"));
+            match used {
+                Some(used) => out.push_str(&format!(
+                    "- context: {used} of {window} tokens ({}%)\n",
+                    used * 100 / window.max(1)
+                )),
+                None => out.push_str(&format!("- context window: {window} tokens\n")),
+            }
+        }
         out.push_str(&format!(
             "- interactive sessions of @{nick} online: {online}"
         ));
@@ -588,10 +743,9 @@ async fn spawn(
     dir: &Path,
     session_id: &str,
     new: bool,
+    model: Option<String>,
 ) -> Result<Conversation> {
     let home = std::env::home_dir().ok_or_else(|| anyhow!("no home directory"))?;
-    let claude = config::claude_path(keys)?;
-    let fingerprint = config::fingerprint(dir, &claude);
     let goniec = std::env::current_exe().context("cannot find the goniec binary")?;
     let state_dir = inbox::state_dir()?.join("headless");
     fs::create_dir_all(&state_dir)?;
@@ -600,7 +754,69 @@ async fn spawn(
         .create(true)
         .append(true)
         .open(state_dir.join(format!("{nick}.log")))?;
+    // The service's PATH may lack the user's own bin directories, and the
+    // session runs `goniec send` from its Bash tool.
+    let path = format!(
+        "{}:{}:{}",
+        home.join(".cargo/bin").display(),
+        home.join(".local/bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let on_pi = keys.on_pi(nick);
+    let pi_model = on_pi.then(|| model.unwrap_or_else(|| pi::default_model(keys)));
+    let (mut command, fingerprint) = match &pi_model {
+        Some(model) => (pi_command(keys, session_id, model, &goniec)?, None),
+        None => {
+            let claude = config::claude_path(keys)?;
+            let fingerprint = config::fingerprint(dir, &claude);
+            (
+                claude_command(&claude, session_id, new, &goniec)?,
+                Some(fingerprint),
+            )
+        }
+    };
+    let mut child = command
+        .current_dir(dir)
+        .env("GONIEC_HEADLESS", "1")
+        .env("GONIEC_DIR", dir)
+        .env("GONIEC_REPLY_TO_FILE", &reply_file)
+        .env("PATH", path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .with_context(|| format!("cannot start the session of @{nick}"))?;
 
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+    let state = Arc::new(Mutex::new(State::default()));
+    let bot = keys.bot(nick)?;
+    let poster = Poster {
+        nick: nick.to_owned(),
+        client: Client::new(&keys.site, &bot.email, &bot.api_key)?,
+        reply_file: reply_file.clone(),
+    };
+    tokio::spawn(read_output(poster, stdout, state.clone(), on_pi));
+    Ok(Conversation {
+        nick: nick.to_owned(),
+        dir: dir.to_owned(),
+        files_client: Client::new(&keys.site, &bot.email, &bot.api_key)?,
+        config: fingerprint,
+        pi_model,
+        end_after_turn: None,
+        child,
+        stdin,
+        state,
+        started: Instant::now(),
+        reply_file,
+        fed_up_to: 0,
+        last_thread: None,
+    })
+}
+
+/// `claude -p` for one conversation: a new one with this UUID, or a resumed
+/// one.
+fn claude_command(claude: &Path, session_id: &str, new: bool, goniec: &Path) -> Result<Command> {
     // `permission` answers what reaches the permission flow (ask rules, and
     // the fallback after repeated blocks). `denied` asks the user about a
     // call the auto-mode classifier blocked, and `pretool` allows the retry
@@ -624,17 +840,9 @@ async fn spawn(
             "PreToolUse": hook("pretool", 10),
         }
     });
-    // The service's PATH may lack the user's own bin directories, and the
-    // session runs `goniec send` from its Bash tool.
-    let path = format!(
-        "{}:{}:{}",
-        home.join(".cargo/bin").display(),
-        home.join(".local/bin").display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
     let which = if new { "--session-id" } else { "--resume" };
-
-    let mut child = Command::new(&claude)
+    let mut command = Command::new(claude);
+    command
         .args([
             "-p",
             "--input-format",
@@ -655,42 +863,35 @@ async fn spawn(
             session_id,
             "--settings",
         ])
-        .arg(settings.to_string())
-        .current_dir(dir)
-        .env("GONIEC_HEADLESS", "1")
-        .env("GONIEC_DIR", dir)
-        .env("GONIEC_REPLY_TO_FILE", &reply_file)
-        .env("PATH", path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .with_context(|| format!("cannot start {}", claude.display()))?;
+        .arg(settings.to_string());
+    Ok(command)
+}
 
-    let stdin = child.stdin.take();
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
-    let state = Arc::new(Mutex::new(State::default()));
-    let bot = keys.bot(nick)?;
-    let poster = Poster {
-        nick: nick.to_owned(),
-        client: Client::new(&keys.site, &bot.email, &bot.api_key)?,
-        reply_file: reply_file.clone(),
-    };
-    tokio::spawn(read_output(poster, stdout, state.clone()));
-    Ok(Conversation {
-        nick: nick.to_owned(),
-        dir: dir.to_owned(),
-        files_client: Client::new(&keys.site, &bot.email, &bot.api_key)?,
-        config: fingerprint,
-        end_after_turn: None,
-        child,
-        stdin,
-        state,
-        started: Instant::now(),
-        reply_file,
-        fed_up_to: 0,
-        last_thread: None,
-    })
+/// `pi --mode rpc` for one conversation. `--session-id` creates the session
+/// or continues it. Only goniec's gate loads: no user or project extension,
+/// no MCP server (their tools have not been tested behind the gate), no
+/// skill.
+fn pi_command(keys: &Keys, session_id: &str, model: &str, goniec: &Path) -> Result<Command> {
+    let setup = pi::prepare(keys)?;
+    let mut command = Command::new(pi::binary(keys)?);
+    command
+        .args(["--mode", "rpc", "--session-id", session_id, "--model"])
+        .arg(format!("{}/{model}", pi::PROVIDER))
+        .args(["--no-extensions", "--extension"])
+        .arg(&setup.gate)
+        .args([
+            "--no-approve",
+            "--no-mcp",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--offline",
+        ])
+        .env("PI_CODING_AGENT_DIR", &setup.agent_dir)
+        .env("GONIEC_BIN", goniec)
+        .env("GONIEC_SESSION_ID", session_id)
+        .env("GONIEC_MODEL", model);
+    Ok(command)
 }
 
 /// Posts a conversation's answers to its thread, as the bot.
@@ -749,47 +950,85 @@ fn chunks(text: &str, max: usize) -> Vec<String> {
     out
 }
 
-/// Follow the process's stream-json output. A `result` event ends a turn,
-/// and its text is the answer, which goes to the turn's thread.
+/// The end of a turn: mark the process idle, and post the answer to the
+/// turn's thread.
+async fn finish_turn(poster: &Poster, state: &Mutex<State>, how: &str, text: &str) {
+    // Read the thread before the turn counts as done: the next turn may
+    // rewrite the file.
+    let target = fs::read_to_string(&poster.reply_file).map(|t| t.trim().to_owned());
+    {
+        let mut s = state.lock().unwrap();
+        s.busy = false;
+        s.turns += 1;
+        s.last_turn_end = Some(Instant::now());
+    }
+    let nick = &poster.nick;
+    log(nick, format!("turn done ({how})"));
+    match (target, text.is_empty()) {
+        (_, true) => {}
+        (Ok(target), false) => {
+            if let Err(e) = poster.post(&target, text).await {
+                log(nick, format!("cannot post the answer: {e:#}"));
+            }
+        }
+        (Err(e), false) => log(nick, format!("no thread for the answer: {e}")),
+    }
+}
+
+/// Follow the process's JSON output. On Claude Code a `result` event ends a
+/// turn, and its text is the answer. On pi `agent_end` carries the answer,
+/// but retries or compaction can follow, so `agent_settled` ends the turn.
 async fn read_output(
     poster: Poster,
     stdout: tokio::process::ChildStdout,
     state: Arc<Mutex<State>>,
+    on_pi: bool,
 ) {
-    let nick = poster.nick.clone();
     let mut lines = BufReader::new(stdout).lines();
+    let mut answer = (String::new(), None::<String>);
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
-        if event["type"] != "result" {
-            continue;
-        }
-        let subtype = event["subtype"].as_str().unwrap_or("?").to_owned();
-        let failed = subtype != "success" || event["is_error"].as_bool().unwrap_or(false);
-        let text = if failed {
-            format!("⚠ The turn ended with an error ({subtype}).")
-        } else {
-            event["result"].as_str().unwrap_or("").trim().to_owned()
-        };
-        // Read the thread before the turn counts as done: the next turn may
-        // rewrite the file.
-        let target = fs::read_to_string(&poster.reply_file).map(|t| t.trim().to_owned());
-        {
-            let mut s = state.lock().unwrap();
-            s.busy = false;
-            s.turns += 1;
-            s.last_turn_end = Some(Instant::now());
-        }
-        log(&nick, format!("turn done ({subtype})"));
-        match (target, text.is_empty()) {
-            (_, true) => {}
-            (Ok(target), false) => {
-                if let Err(e) = poster.post(&target, &text).await {
-                    log(&nick, format!("cannot post the answer: {e:#}"));
+        let kind = event["type"].as_str().unwrap_or("");
+        match (on_pi, kind) {
+            (false, "result") => {
+                let subtype = event["subtype"].as_str().unwrap_or("?");
+                let failed = subtype != "success" || event["is_error"].as_bool().unwrap_or(false);
+                let text = if failed {
+                    format!("⚠ The turn ended with an error ({subtype}).")
+                } else {
+                    event["result"].as_str().unwrap_or("").trim().to_owned()
+                };
+                finish_turn(&poster, &state, subtype, &text).await;
+            }
+            (true, "agent_end") => {
+                answer = pi::answer(&event);
+                if let Some(tokens) = pi::context_tokens(&event) {
+                    state.lock().unwrap().context_tokens = Some(tokens);
                 }
             }
-            (Err(e), false) => log(&nick, format!("no thread for the answer: {e}")),
+            (true, "agent_settled") => {
+                let (text, error) = std::mem::take(&mut answer);
+                let aborted = event["aborted"].as_bool().unwrap_or(false);
+                let (how, text) = match error {
+                    _ if aborted => ("aborted", "⏹ Stopped.".to_owned()),
+                    Some(error) => ("error", format!("⚠ The turn ended with an error: {error}")),
+                    None => ("success", text),
+                };
+                finish_turn(&poster, &state, how, &text).await;
+            }
+            // A prompt pi refused, or handled without a run, ends no run.
+            (true, "response") if event["command"] == "prompt" => {
+                if event["success"] == false {
+                    let error = event["error"].as_str().unwrap_or("pi refused the prompt");
+                    let text = format!("⚠ {error}");
+                    finish_turn(&poster, &state, "refused", &text).await;
+                } else if event["data"]["disposition"] == "handled" {
+                    finish_turn(&poster, &state, "handled", "").await;
+                }
+            }
+            _ => {}
         }
     }
     state.lock().unwrap().exited = true;
@@ -840,17 +1079,21 @@ async fn feed(
         conv.last_thread = Some(threads::key(first));
     }
     let images = headless::images(&instructions);
-    let content = if images.is_empty() {
-        serde_json::Value::String(prompt)
+    let line = if conv.pi_model.is_some() {
+        pi::prompt_line(&prompt, &images)
     } else {
-        let mut blocks = vec![serde_json::json!({ "type": "text", "text": prompt })];
-        blocks.extend(images);
-        serde_json::Value::Array(blocks)
+        let content = if images.is_empty() {
+            serde_json::Value::String(prompt)
+        } else {
+            let mut blocks = vec![serde_json::json!({ "type": "text", "text": prompt })];
+            blocks.extend(images);
+            serde_json::Value::Array(blocks)
+        };
+        serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content },
+        })
     };
-    let line = serde_json::json!({
-        "type": "user",
-        "message": { "role": "user", "content": content },
-    });
     let stdin = conv
         .stdin
         .as_mut()
