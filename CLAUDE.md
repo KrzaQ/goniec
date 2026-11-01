@@ -194,9 +194,9 @@ checked 2026-10-24 for version 2.1.310). Test them before relying on them.
   `SessionEnd`. All exit 0 at once outside a bound session directory, so one
   config can serve every session. It lives in the user's global
   `~/.claude/settings.json`. `goniec install-hooks` adds it on each machine,
-  and `--remove` takes it out. The user's dotfiles run it as the last step of
-  `make install-goniec-daemon`, because the hooks only work where a daemon
-  runs; `make bootstrap-goniec` does not touch `settings.json`. It adds,
+  and `--remove` takes it out. The user's claude-setup repository runs it as
+  the last step of `make install-daemon`, because the hooks only work where a
+  daemon runs; `make bootstrap` does not touch `settings.json`. It adds,
   replaces or removes only goniec's own entries (a command with `goniec` and
   `hook wait`, `hook context` or `hook end`), never a whole event list, so
   the user's other hooks on the same events stay. claude-setup does not sync
@@ -320,7 +320,7 @@ headless process for it ends after its turn (tested live with `@kiekert`).
   Messages that arrive meanwhile stay in the inbox for the next daemon.
   This needs the service manager to signal only the daemon and to wait:
   with systemd, `KillMode=mixed` and a `TimeoutStopSec` longer than a turn
-  (the dotfiles unit, agreed on 2026-10-30). With the old
+  (the installed unit, agreed on 2026-10-30). With the old
   `KillMode=control-group`, a restart killed headless turns mid-way.
 - **At most 3 headless processes per bot, 5 for a dispatcher** (`@claude`),
   the user's numbers (2026-10-30). A conversation over the limit does not
@@ -578,7 +578,8 @@ goniec's own would rebuild pi's tool loop, compaction and sessions.
   command until it passes. An unusable answer counts as `forward`.
 - **Choosing the model.** `!model [96|192|262] [unc|oblit]` sets the
   thread's model; `!model` alone shows it. The variant is part of the model
-  name (`qwen3.8-27b-unc-96k`). A process keeps its model, so the next
+  name (`qwen3.8-27b-unc-96k`, or `-192k`, the default size). A process keeps
+  its model, so the next
   message starts the conversation again on the new one, with its context
   (tested live: 25 s with the reload). `!new` keeps the thread's model.
 - **One process per pi bot.** A model fills most of the one GPU.
@@ -670,8 +671,8 @@ So goniec uses two kinds of key:
    `read <thread>` prints a thread's history, also as `@guest`. Open:
    `read` of new messages as `@guest`, which needs state per guest
    session.
-4. Daemon: the event queue and the inbox. The user's dotfiles vendor goniec
-   and hold the systemd user unit (`make install-goniec-daemon`). The unit
+4. Daemon: the event queue and the inbox. The user's claude-setup repository
+   vendors goniec and holds the systemd user unit (`make install-daemon`). The unit
    does not restart on exit code 3, which means another daemon holds the
    lock. Open: launchd on a Mac, a logon task on Windows. Not tested yet: an
    expired event queue (`BAD_EVENT_QUEUE_ID`), and a reload after a new bind.
