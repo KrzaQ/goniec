@@ -43,14 +43,14 @@ export default function (pi: any) {
 }
 "#;
 
-/// The default base model. Its name carries the variant: `-unc` or `-oblit`
-/// for the flavor, `-96k` or `-262k` for the context; 192 has no suffix.
+/// The default base model. A model's name adds the variant to it: `-unc` or
+/// `-oblit` for the flavor, then `-96k`, `-192k` or `-262k` for the context.
 const DEFAULT_MODEL: &str = "qwen3.8-27b";
 
 /// The variants that exist: context label, suffix, tokens, flavors.
 const SIZES: [(&str, &str, u64, &[&str]); 3] = [
     ("96", "-96k", 98_304, &["", "unc"]),
-    ("192", "", 196_608, &["", "unc", "oblit"]),
+    ("192", "-192k", 196_608, &["", "unc", "oblit"]),
     ("262", "-262k", 262_144, &["", "unc", "oblit"]),
 ];
 
@@ -147,11 +147,11 @@ pub fn default_model(keys: &Keys) -> String {
 
 /// The context window of a model, from its name.
 pub fn window(model: &str) -> u64 {
+    // A name without a size is an old alias of the default variant.
     SIZES
         .iter()
-        .filter(|(_, suffix, ..)| !suffix.is_empty())
         .find(|(_, suffix, ..)| model.ends_with(suffix))
-        .or_else(|| SIZES.iter().find(|(_, suffix, ..)| suffix.is_empty()))
+        .or_else(|| SIZES.iter().find(|(label, ..)| *label == DEFAULT_VARIANT))
         .map_or(0, |(_, _, tokens, _)| *tokens)
 }
 
@@ -299,14 +299,14 @@ mod tests {
     fn models() {
         let k = keys();
         assert_eq!(parse_model(&k, "96").unwrap(), "qwen3.8-27b-96k");
-        assert_eq!(parse_model(&k, "192").unwrap(), "qwen3.8-27b");
+        assert_eq!(parse_model(&k, "192").unwrap(), "qwen3.8-27b-192k");
         assert_eq!(parse_model(&k, "262").unwrap(), "qwen3.8-27b-262k");
         assert_eq!(parse_model(&k, "96 unc").unwrap(), "qwen3.8-27b-unc-96k");
         assert_eq!(parse_model(&k, "UNC 262").unwrap(), "qwen3.8-27b-unc-262k");
-        assert_eq!(parse_model(&k, "oblit").unwrap(), "qwen3.8-27b-oblit");
+        assert_eq!(parse_model(&k, "oblit").unwrap(), "qwen3.8-27b-oblit-192k");
         assert!(parse_model(&k, "96 oblit").is_err());
         assert!(parse_model(&k, "large").is_err());
-        assert_eq!(default_model(&k), "qwen3.8-27b");
+        assert_eq!(default_model(&k), "qwen3.8-27b-192k");
     }
 
     #[test]
@@ -331,7 +331,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(98_304 - reserve("qwen3.8-27b-unc-96k"), 80_000);
-        assert_eq!(196_608 - reserve("qwen3.8-27b"), 175_000);
+        assert_eq!(196_608 - reserve("qwen3.8-27b-192k"), 175_000);
         assert_eq!(262_144 - reserve("qwen3.8-27b-oblit-262k"), 240_000);
     }
 
@@ -355,6 +355,7 @@ mod tests {
     fn context_sizes() {
         assert_eq!(window("qwen3.8-27b-96k"), 98_304);
         assert_eq!(window("qwen3.8-27b-unc-262k"), 262_144);
+        assert_eq!(window("qwen3.8-27b-192k"), 196_608);
         assert_eq!(window("qwen3.8-27b"), 196_608);
         let event = json!({ "messages": [
             { "role": "assistant", "usage": { "totalTokens": 10 } },
