@@ -78,6 +78,20 @@ const RETRY_NOTE: &str = "This session runs headless; the user approves tool cal
     it, the user has approved exactly that call in the chat: run the same call again, \
     unchanged, before you try anything else. Without that message, the denial stands.";
 
+/// Added to a headless session's system prompt: how to show the user a file.
+/// Without it `@labels` rendered a preview to `/tmp`, looked at it itself,
+/// and sent the user only text (2026-11-03). `--attach` takes files only
+/// from `dir`, which is why the note names it.
+fn files_note(dir: &Path) -> String {
+    format!(
+        "Your final answer is posted to the user's chat thread automatically. To show the \
+         user an image or another file, save it under {} (create the directory if needed) \
+         and run `goniec send . 'a short caption' --attach <file>`; `.` is the current \
+         thread. goniec refuses files from anywhere else, /tmp included.",
+        dir.display()
+    )
+}
+
 /// The permission hook's timeout. The hook itself gives up after 14 minutes.
 const PERMISSION_TIMEOUT: u64 = 15 * 60;
 
@@ -808,12 +822,12 @@ async fn spawn(
     let on_pi = keys.on_pi(nick);
     let pi_model = on_pi.then(|| model.unwrap_or_else(|| pi::default_model(keys)));
     let (mut command, fingerprint) = match &pi_model {
-        Some(model) => (pi_command(keys, session_id, model, &goniec)?, None),
+        Some(model) => (pi_command(keys, dir, session_id, model, &goniec)?, None),
         None => {
             let claude = config::claude_path(keys)?;
             let fingerprint = config::fingerprint(dir, &claude);
             (
-                claude_command(&claude, session_id, new, &goniec)?,
+                claude_command(&claude, dir, session_id, new, &goniec)?,
                 Some(fingerprint),
             )
         }
@@ -859,7 +873,13 @@ async fn spawn(
 
 /// `claude -p` for one conversation: a new one with this UUID, or a resumed
 /// one.
-fn claude_command(claude: &Path, session_id: &str, new: bool, goniec: &Path) -> Result<Command> {
+fn claude_command(
+    claude: &Path,
+    dir: &Path,
+    session_id: &str,
+    new: bool,
+    goniec: &Path,
+) -> Result<Command> {
     // `permission` answers what reaches the permission flow (ask rules, and
     // the fallback after repeated blocks). `denied` asks the user about a
     // call the auto-mode classifier blocked, and `pretool` allows the retry
@@ -900,6 +920,8 @@ fn claude_command(claude: &Path, session_id: &str, new: bool, goniec: &Path) -> 
             "auto",
             "--append-system-prompt",
             RETRY_NOTE,
+            "--append-system-prompt",
+            &files_note(&uploads::session_tmp(dir, session_id).join("out")),
             "--allowedTools",
             "Bash(goniec send *),Bash(goniec read *)",
             which,
@@ -914,11 +936,22 @@ fn claude_command(claude: &Path, session_id: &str, new: bool, goniec: &Path) -> 
 /// or continues it. Only goniec's gate loads: no user or project extension,
 /// no MCP server (their tools have not been tested behind the gate), no
 /// skill.
-fn pi_command(keys: &Keys, session_id: &str, model: &str, goniec: &Path) -> Result<Command> {
+fn pi_command(
+    keys: &Keys,
+    dir: &Path,
+    session_id: &str,
+    model: &str,
+    goniec: &Path,
+) -> Result<Command> {
     let setup = pi::prepare(keys)?;
     let mut command = Command::new(pi::binary(keys)?);
     command
-        .args(["--mode", "rpc", "--session-id", session_id, "--model"])
+        .args(["--mode", "rpc", "--session-id", session_id])
+        // pi has no verified temp directory, so `--attach` takes only files
+        // from the session directory.
+        .arg("--append-system-prompt")
+        .arg(files_note(&dir.join("out")))
+        .arg("--model")
         .arg(format!("{}/{model}", pi::PROVIDER))
         .args(["--no-extensions", "--extension"])
         .arg(&setup.gate)

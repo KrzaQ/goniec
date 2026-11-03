@@ -90,6 +90,16 @@ pub async fn send(
     text: &str,
     attach: &[PathBuf],
 ) -> Result<u64> {
+    // `.` is the current turn's thread of a headless session.
+    let current;
+    let to = if to == "." {
+        current = crate::headless::current_thread().ok_or_else(|| {
+            anyhow::anyhow!("`.` names the current thread only in a headless session")
+        })?;
+        current.as_str()
+    } else {
+        to
+    };
     let target = parse_target(to)?;
     if text.trim().is_empty() && attach.is_empty() {
         bail!("the message is empty");

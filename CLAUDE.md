@@ -133,6 +133,12 @@ agent ──`goniec send` / MCP tool──▶ Zulip REST, as its own bot (or @gu
   of the user's messages (PNG, JPEG, GIF, WebP, at most 3.75 MB, the API's
   5 MB of base64) as an image block, so the model sees it at once (tested
   2026-10-30).
+- **A headless session is told how to show a file.** Its system prompt
+  names a directory for files to show (`out/` in its Claude temp
+  directory, or in the session directory on pi) and the command
+  `goniec send . 'caption' --attach <file>`, where `.` is the current
+  thread. Without that note `@labels` rendered a label preview to `/tmp`,
+  looked at it itself, and sent the user only text (2026-11-03).
 - **`goniec send --attach <file>`** uploads files and links them. It takes
   only files under the session directory or the session's own temp
   directory (its scratchpad is there), after following links. goniec

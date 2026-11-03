@@ -40,12 +40,17 @@ pub fn own_thread_note(to: &str) -> Option<&'static str> {
     if !active() {
         return None;
     }
-    let target = crate::send::parse_target(to).ok()?;
+    let to = if to == "." {
+        current_thread()?
+    } else {
+        to.to_owned()
+    };
+    let target = crate::send::parse_target(&to).ok()?;
     let current = crate::send::parse_target(&current_thread()?).ok()?;
     (target == current).then_some(
         "[goniec] Sent. In this conversation your final answer is posted to this thread \
-         automatically, so you do not need goniec send to answer here. Use goniec send \
-         for other threads or people.",
+         automatically, so you do not need goniec send for the answer itself. Use goniec send \
+         for files (--attach), and for other threads or people.",
     )
 }
 

@@ -20,7 +20,8 @@ struct Cli {
 enum Command {
     /// Send a message to a channel topic or to a nickname
     Send {
-        /// `#channel>topic`, `user:<id>`, `@nick` or a human's full name
+        /// `#channel>topic`, `user:<id>`, `@nick`, a human's full name, or `.`
+        /// for the current thread of a headless session
         to: String,
         /// The message text; `-` or nothing reads it from stdin
         text: Option<String>,

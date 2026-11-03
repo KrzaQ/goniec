@@ -79,6 +79,10 @@ impl Scope {
 
     /// The target is the session's own thread, or the trusted user.
     fn is_own_target(&self, target: &str) -> bool {
+        // `.` is the current thread by definition.
+        if target == "." {
+            return true;
+        }
         let Ok(target) = send::parse_target(target) else {
             return false;
         };
@@ -589,6 +593,10 @@ mod tests {
         assert_eq!(bash("goniec send '#ops>x' 'a; b | c'"), Rule::Allow);
         assert_eq!(bash("goniec send '#ops>x' \"it's fine\""), Rule::Allow);
         assert_eq!(bash("goniec send user:8 hello"), Rule::Allow);
+        assert_eq!(
+            bash("goniec send . 'see this' --attach out/a.png"),
+            Rule::Allow
+        );
         // Anywhere else goes to the user.
         assert_eq!(bash("goniec send '#ops>other' hello"), Rule::Classify);
         assert_eq!(bash("goniec send user:9 hello"), Rule::Classify);
